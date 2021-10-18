@@ -7,6 +7,8 @@ extern "C" {
 #include <espnow.h>
 }
 
+//#define PRINTTOSERIAL 1
+
 /*
   COLOURS:
 
@@ -39,12 +41,14 @@ void setup() {
 
   unsigned long startTime = millis();
 
+#if defined(PRINTTOSERIAL)
   Serial.begin(115200);
 
   Serial.println();
   Serial.println();
   Serial.println("ESP_Now Crane Transmitter");
   Serial.println();
+#endif
 
   WiFi.mode(WIFI_STA); // Station mode for esp-now sensor node
 
@@ -53,14 +57,17 @@ void setup() {
 
   WiFi.disconnect();
 
-
-
+#if defined(PRINTTOSERIAL)
   Serial.printf("This mac: %s, ", WiFi.macAddress().c_str());
   Serial.printf("target mac: %02x%02x%02x%02x%02x%02x", remoteMac[0], remoteMac[1], remoteMac[2], remoteMac[3], remoteMac[4], remoteMac[5]);
   Serial.printf(", channel: %i\n", WIFI_CHANNEL);
+#endif
 
   if (esp_now_init() != 0) {
+#if defined(PRINTTOSERIAL)
     Serial.println("*** ESP_Now init failed");
+#endif
+
     ESP.restart();
   }
 
@@ -70,7 +77,10 @@ void setup() {
 
   //esp_now_register_send_cb is a callback function that is called when a message was sent to show it's status
   esp_now_register_send_cb([](uint8_t* mac, uint8_t sendStatus) {
+#if defined(PRINTTOSERIAL)
     Serial.printf("send_cb, send done @ %i, status = %i\n", millis(), sendStatus);
+#endif
+
   });
 
   //buttons
@@ -81,8 +91,15 @@ void setup() {
   pinMode(D7, INPUT);
   pinMode(D8, INPUT);
 
+  //LED
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
+
+#if defined(PRINTTOSERIAL)
   Serial.print("Time to complete setup: ");
   Serial.println(millis() - startTime);
+#endif
+
 }
 
 unsigned long stopMessageCount = 0;
@@ -104,17 +121,28 @@ void loop() {
       sendMessage(boom, rotation, hook);
     }
   } else {
+
     //always send a message if it's not a stop message
     sendMessage(boom, rotation, hook);
 
     //reset stop message count
     stopMessageCount = 0;
+
   }
 
+#if defined(PRINTTOSERIAL)
   Serial.print("Stop message count: ");
   Serial.println(stopMessageCount);
+#endif
 
-  delay(100);
+  if (boom == 0 && hook == 0 && rotation == 0) {
+    delay(100);
+  }
+  else {
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(100);
+    digitalWrite(LED_BUILTIN, HIGH);
+  }
 }
 
 int rotationMessage() {
@@ -201,7 +229,18 @@ void sendMessage(int boom, int rotation, int hook) {
 
   esp_now_send(NULL, msgToSend, sizeof(transmitter)); // NULL means send to all peers
 
+
+#if defined(PRINTTOSERIAL)
+  Serial.print("boom:");
+  Serial.println(boom);
+
+  Serial.print("rotation:");
+  Serial.println(rotation);
+
+  Serial.print("hook:");
+  Serial.println(hook);
+
   Serial.print("Time to send: ");
   Serial.println(millis() - entry);
-
+#endif
 }
