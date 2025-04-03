@@ -1,0 +1,7 @@
+wemos/LOLIN_I2C_MOTOR@^1.0.0
+https://github.com/marcoschwartz/aREST.git
+me-no-dev/ESP Async WebServer
+https://github.com/me-no-dev/AsyncTCP.git
+https://github.com/me-no-dev/ESPAsyncTCP.git
+adafruit/Adafruit NeoPixel@^1.11.0
+bblanchon/ArduinoJson@^6.21.3
