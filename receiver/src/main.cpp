@@ -1,4 +1,3 @@
-#include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <espnow.h>
 #include <ArduinoJson.h>
@@ -10,22 +9,6 @@
 #include <map>
 #include <string>
 #include <Adafruit_NeoPixel.h>
-#include <FreeRTOS.h>
-#include <task.h>
-#include <queue.h>
-#include <semphr.h>
-
-// Debug mode flag - enables/disables Serial output for debugging
-#define DEBUG_MODE true
-
-// Debug output macros - only active when DEBUG_MODE is true
-#if DEBUG_MODE
-#define debugPrintln(message) Serial.println(message)
-#define debugPrint(message) Serial.print(message)
-#else
-#define debugPrintln(message)  // Debug messages disabled
-#define debugPrint(message)    // Debug messages disabled
-#endif
 
 // Map to store button states and their corresponding values
 // 0 = inactive/off, 1 = active/on
@@ -37,6 +20,9 @@ std::map<std::string, int> buttons = {
   { "UP", 0 },          // Controls upward movement
   { "IN", 0 }           // Controls retraction inward
 };
+
+// Debug mode flag - enables/disables Serial output for debugging
+#define DEBUG_MODE true
 
 // Configuration structure to store all system settings
 struct Config {
@@ -69,6 +55,15 @@ const unsigned long MESSAGE_TIMEOUT = 1000;  // Timeout period in milliseconds (
 // ESP-NOW communication status
 bool espNowInitialized = false;
 
+// Debug output macros - only active when DEBUG_MODE is true
+#if DEBUG_MODE
+#define debugPrintln(message) Serial.println(message)
+#define debugPrint(message) Serial.print(message)
+#else
+#define debugPrintln(message)  // Debug messages disabled
+#define debugPrint(message)    // Debug messages disabled
+#endif
+
 // NeoPixel LED configuration
 #define LED_PIN D4 // GPIO pin connected to the NeoPixel data line.
 #define LED_COUNT 7 // Number of LEDs in your NeoPixel strip.
@@ -92,177 +87,37 @@ const long animationInterval = 60;
 bool centerLedState = false;
 bool animationRunning = true;
 
-// FreeRTOS handles
-TaskHandle_t otaTaskHandle = NULL;
-TaskHandle_t motorControlTaskHandle = NULL;
-TaskHandle_t ledTaskHandle = NULL;
-TaskHandle_t watchdogTaskHandle = NULL;
-
-// FreeRTOS mutex for buttons access
-SemaphoreHandle_t buttonsMutex;
+void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t len);
 
 // Structure to hold ESP-NOW message data
 typedef struct {
   char message[200]; // JSON message containing button states
 } espnow_message_t;
 
-// Forward declarations
-void setupMotors();
-bool setupESPNow();
-void stopAllMotors();
-void controlMotor();
-void updateLEDs();
-bool connectToWiFi();
-void setupOTA();
+// Attempts to connect to WiFi network for OTA updates
+bool connectToWiFi() {
+  debugPrintln("Connecting to WiFi for OTA...");
+  WiFi.mode(WIFI_STA);  // Set WiFi mode to Station (client)
+  WiFi.begin(config.wifi_ssid, config.wifi_password);
 
-// FreeRTOS task prototypes
-void otaTask(void *pvParameters);
-void motorControlTask(void *pvParameters);
-void ledTask(void *pvParameters);
-void watchdogTask(void *pvParameters);
-
-// Callback function for ESP-NOW data reception
-void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t len) {
-  // Update last message time
-  lastMessageTime = millis();
-  
-  debugPrintln("ESP-NOW message received");
-  
-  // Check if data is valid
-  if (len <= 0 || len > sizeof(espnow_message_t)) {
-    debugPrintln("Invalid data length");
-    return;
-  }
-  
-  // Create a buffer for the message
-  char messageBuffer[200];
-  memcpy(messageBuffer, data, min(len, sizeof(messageBuffer) - 1));
-  messageBuffer[min(len, sizeof(messageBuffer) - 1)] = '\0'; // Ensure null termination
-  
-  debugPrint("Message: ");
-  debugPrintln(messageBuffer);
-  
-  // Parse JSON message for movement commands
-  StaticJsonDocument<200> doc;
-  DeserializationError error = deserializeJson(doc, messageBuffer);
-
-  if (error) {
-    debugPrint("deserializeJson() failed: ");
-    debugPrintln(error.c_str());
-    return;
+  // Wait for connection with timeout
+  int timeout = 0;
+  while (WiFi.status() != WL_CONNECTED && timeout < config.wifi_timeout) {
+    delay(500);
+    debugPrint(".");
+    timeout++;
   }
 
-  // Take mutex before updating button states
-  if (xSemaphoreTake(buttonsMutex, portMAX_DELAY) == pdTRUE) {
-    // Update button states from JSON message
-    if (doc.containsKey("ANTICLOCKWISE")) {
-      buttons["ANTICLOCKWISE"] = doc["ANTICLOCKWISE"];
-    }
-    if (doc.containsKey("CLOCKWISE")) {
-      buttons["CLOCKWISE"] = doc["CLOCKWISE"];
-    }
-    if (doc.containsKey("UP")) {
-      buttons["UP"] = doc["UP"];
-    }
-    if (doc.containsKey("DOWN")) {
-      buttons["DOWN"] = doc["DOWN"];
-    }
-    if (doc.containsKey("OUT")) {
-      buttons["OUT"] = doc["OUT"];
-    }
-    if (doc.containsKey("IN")) {
-      buttons["IN"] = doc["IN"];
-    }
-    
-    // Release mutex
-    xSemaphoreGive(buttonsMutex);
-  }
-}
-
-// OTA Task
-void otaTask(void *pvParameters) {
-  const TickType_t xDelay = 10 / portTICK_PERIOD_MS; // 10ms
-  
-  for (;;) {
-    ArduinoOTA.handle();
-    vTaskDelay(xDelay);
-  }
-}
-
-// Motor Control Task
-void motorControlTask(void *pvParameters) {
-  const TickType_t xDelay = 50 / portTICK_PERIOD_MS; // 50ms
-  
-  for (;;) {
-    // Take mutex before accessing button states
-    if (xSemaphoreTake(buttonsMutex, portMAX_DELAY) == pdTRUE) {
-      // Check for message timeout
-      if (millis() - lastMessageTime > MESSAGE_TIMEOUT) {
-        // Reset all button states
-        buttons["ANTICLOCKWISE"] = 0;
-        buttons["CLOCKWISE"] = 0;
-        buttons["UP"] = 0;
-        buttons["DOWN"] = 0;
-        buttons["OUT"] = 0;
-        buttons["IN"] = 0;
-        
-        // Stop all motors
-        stopAllMotors();
-      } else {
-        // Execute motor control based on button states
-        controlMotor();
-      }
-      
-      // Release mutex
-      xSemaphoreGive(buttonsMutex);
-    }
-    
-    vTaskDelay(xDelay);
-  }
-}
-
-// LED Control Task
-void ledTask(void *pvParameters) {
-  const TickType_t xDelay = 10 / portTICK_PERIOD_MS; // 10ms
-  
-  for (;;) {
-    unsigned long currentMillis = millis();
-    bool updateDisplay = false;
-
-    if (currentMillis - previousCenterBlinkMillis >= centerBlinkInterval) {
-      previousCenterBlinkMillis = currentMillis;
-      centerLedState = !centerLedState;
-      updateDisplay = true;
-    }
-
-    if (animationRunning && currentMillis - previousAnimationMillis >= animationInterval) {
-      previousAnimationMillis = currentMillis;
-      currentLED = (currentLED % STEPS_PER_CYCLE) + 1;
-      updateDisplay = true;
-    }
-
-    if (updateDisplay) {
-      updateLEDs();
-    }
-    
-    vTaskDelay(xDelay);
-  }
-}
-
-// Watchdog Task - monitor ESP-NOW and other system services
-void watchdogTask(void *pvParameters) {
-  const TickType_t xDelay = 5000 / portTICK_PERIOD_MS; // 5 seconds
-  
-  for (;;) {
-    // If ESP-NOW is not initialized, try to set it up
-    if (!espNowInitialized) {
-      espNowInitialized = setupESPNow();
-      if (espNowInitialized) {
-        debugPrintln("ESP-NOW reinitialized successfully");
-      }
-    }
-    
-    vTaskDelay(xDelay);
+  // Report connection status
+  if (WiFi.status() == WL_CONNECTED) {
+    debugPrintln("");
+    debugPrint("Connected to WiFi network with IP Address: ");
+    debugPrintln(WiFi.localIP());
+    return true;
+  } else {
+    debugPrintln("");
+    debugPrintln("Failed to connect to WiFi");
+    return false;
   }
 }
 
@@ -350,31 +205,60 @@ bool setupESPNow() {
   return true;
 }
 
-// Attempts to connect to WiFi network for OTA updates
-bool connectToWiFi() {
-  debugPrintln("Connecting to WiFi for OTA...");
-  WiFi.mode(WIFI_STA);  // Set WiFi mode to Station (client)
-  WiFi.begin(config.wifi_ssid, config.wifi_password);
+// Callback function for ESP-NOW data reception
+void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t len) {
+  // Update last message time
+  lastMessageTime = millis();
+  
+  debugPrintln("ESP-NOW message received");
+  
+  // Check if data is valid
+  if (len <= 0 || len > sizeof(espnow_message_t)) {
+    debugPrintln("Invalid data length");
+    return;
+  }
+  
+  // Create a buffer for the message
+  char messageBuffer[200];
+  size_t copyLen = (len < sizeof(messageBuffer) - 1) ? len : sizeof(messageBuffer) - 1;
+  memcpy(messageBuffer, data, copyLen);
+  messageBuffer[copyLen] = '\0'; // Ensure null termination
+  
+  debugPrint("Message: ");
+  debugPrintln(messageBuffer);
+  
+  // Parse JSON message for movement commands
+  StaticJsonDocument<200> doc;
+  DeserializationError error = deserializeJson(doc, messageBuffer);
 
-  // Wait for connection with timeout
-  int timeout = 0;
-  while (WiFi.status() != WL_CONNECTED && timeout < config.wifi_timeout) {
-    delay(500);
-    debugPrint(".");
-    timeout++;
+  if (error) {
+    debugPrint("deserializeJson() failed: ");
+    debugPrintln(error.c_str());
+    return;
   }
 
-  // Report connection status
-  if (WiFi.status() == WL_CONNECTED) {
-    debugPrintln("");
-    debugPrint("Connected to WiFi network with IP Address: ");
-    debugPrintln(WiFi.localIP());
-    return true;
-  } else {
-    debugPrintln("");
-    debugPrintln("Failed to connect to WiFi");
-    return false;
+  // Update button states from JSON message
+  if (doc.containsKey("ANTICLOCKWISE")) {
+    buttons["ANTICLOCKWISE"] = doc["ANTICLOCKWISE"];
   }
+  if (doc.containsKey("CLOCKWISE")) {
+    buttons["CLOCKWISE"] = doc["CLOCKWISE"];
+  }
+  if (doc.containsKey("UP")) {
+    buttons["UP"] = doc["UP"];
+  }
+  if (doc.containsKey("DOWN")) {
+    buttons["DOWN"] = doc["DOWN"];
+  }
+  if (doc.containsKey("OUT")) {
+    buttons["OUT"] = doc["OUT"];
+  }
+  if (doc.containsKey("IN")) {
+    buttons["IN"] = doc["IN"];
+  }
+
+  // Execute motor control based on updated button states
+  controlMotor();
 }
 
 // Configure Over-The-Air update functionality
@@ -476,7 +360,7 @@ void setup() {
   delay(100);            // Wait for serial to stabilize
 #endif
 
-  debugPrintln("ESP8266 Crane Motor Controller with FreeRTOS");
+  debugPrintln("ESP8266 Crane Motor Controller with ESP-NOW");
 
   // Initialize I2C communication for motor control
   Wire.begin();
@@ -486,12 +370,6 @@ void setup() {
 
   // Initialize last message time
   lastMessageTime = millis();
-
-  // Initialize NeoPixel
-  pixels.begin();
-  pixels.setBrightness(100);
-  pixels.clear();
-  pixels.show();
 
   // Connect to WiFi for OTA updates
   if (connectToWiFi()) {
@@ -508,51 +386,58 @@ void setup() {
   // Setup ESP-NOW after WiFi is configured
   espNowInitialized = setupESPNow();
 
-  // Create mutex for button access
-  buttonsMutex = xSemaphoreCreateMutex();
-  
-  // Create FreeRTOS tasks
-  xTaskCreate(
-    otaTask,            // Function that implements the task
-    "OTATask",          // Text name for the task
-    2048,               // Stack size in words, not bytes
-    NULL,               // Parameter passed into the task
-    1,                  // Priority at which the task is created
-    &otaTaskHandle      // Used to pass out the created task's handle
-  );
-  
-  xTaskCreate(
-    motorControlTask,
-    "MotorTask",
-    2048,
-    NULL,
-    2,                  // Higher priority than OTA task
-    &motorControlTaskHandle
-  );
-  
-  xTaskCreate(
-    ledTask,
-    "LEDTask",
-    1024,
-    NULL,
-    1,
-    &ledTaskHandle
-  );
-  
-  xTaskCreate(
-    watchdogTask,
-    "WatchdogTask",
-    1024,
-    NULL,
-    1,
-    &watchdogTaskHandle
-  );
+  // Initialize NeoPixel
+  pixels.begin();
+  pixels.setBrightness(100);
+  pixels.clear();
+  pixels.show();
 
-  debugPrintln("FreeRTOS setup complete");
+  debugPrintln("Setup complete");
 }
 
-// Main program loop - not used with FreeRTOS
+// Main program loop
 void loop() {
-  // Empty since we're using FreeRTOS tasks
-  vTaskDelay(1000 / portTICK_PERIOD_MS);
+  // Handle any pending OTA updates
+  ArduinoOTA.handle();
+
+  // Check for message timeout
+  if (millis() - lastMessageTime > MESSAGE_TIMEOUT) {
+    // Reset all button states
+    buttons["ANTICLOCKWISE"] = 0;
+    buttons["CLOCKWISE"] = 0;
+    buttons["UP"] = 0;
+    buttons["DOWN"] = 0;
+    buttons["OUT"] = 0;
+    buttons["IN"] = 0;
+    
+    // Stop all motors
+    stopAllMotors();
+  }
+
+  // If ESP-NOW is not initialized, try to set it up
+  if (!espNowInitialized) {
+    espNowInitialized = setupESPNow();
+  }
+
+  unsigned long currentMillis = millis();
+  bool updateDisplay = false;
+
+  if (currentMillis - previousCenterBlinkMillis >= centerBlinkInterval) {
+    previousCenterBlinkMillis = currentMillis;
+    centerLedState = !centerLedState;
+    updateDisplay = true;
+  }
+
+  if (animationRunning && currentMillis - previousAnimationMillis >= animationInterval) {
+    previousAnimationMillis = currentMillis;
+    currentLED = (currentLED % STEPS_PER_CYCLE) + 1;
+    updateDisplay = true;
+  }
+
+  if (updateDisplay) {
+    updateLEDs();
+  }
+
+  // Small delay to prevent overwhelming the system
+  delay(10);
 }
