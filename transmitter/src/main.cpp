@@ -54,14 +54,9 @@ bool readyToSleep = true;               // Flag to indicate ready to enter sleep
 // ESP-NOW broadcast address (FF:FF:FF:FF:FF:FF broadcasts to all ESP-NOW devices in range)
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-// ESP-NOW message structure
+// ESP-NOW message structure - compact binary format
 typedef struct crane_message {
-  int anticlockwise;
-  int down;
-  int out;
-  int clockwise;
-  int up;
-  int in;
+  uint8_t buttonStates;  // Each bit represents a button state (bits 0-5)
 } crane_message;
 
 // Create message instance
@@ -116,13 +111,13 @@ void initESPNow() {
 
 // Function to send button states via ESP-NOW
 void sendButtonStates() {
-  // Update crane message structure
-  craneMsg.anticlockwise = buttonStates[0] == HIGH ? 1 : 0;
-  craneMsg.down = buttonStates[1] == HIGH ? 1 : 0;
-  craneMsg.out = buttonStates[2] == HIGH ? 1 : 0;
-  craneMsg.clockwise = buttonStates[3] == HIGH ? 1 : 0;
-  craneMsg.up = buttonStates[4] == HIGH ? 1 : 0;
-  craneMsg.in = buttonStates[5] == HIGH ? 1 : 0;
+  // Pack all button states into a single byte (bit 0 = button 1, bit 1 = button 2, etc.)
+  craneMsg.buttonStates = 0;
+  for (int i = 0; i < numButtons; i++) {
+    if (buttonStates[i] == HIGH) {
+      craneMsg.buttonStates |= (1 << i);  // Set the bit for this button
+    }
+  }
 
   // Send message via ESP-NOW
   esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &craneMsg, sizeof(craneMsg));
@@ -133,17 +128,14 @@ void sendButtonStates() {
     debugPrintln("Error sending ESP-NOW message");
   }
   
-  // Additionally, create JSON for debug output
+  // Debug output without JSON
   #if DEBUG_MODE
-  StaticJsonDocument<200> doc;
+  debugPrintln("Button states:");
   for (int i = 0; i < numButtons; i++) {
-    doc[buttonMovements[i]] = buttonStates[i] == HIGH ? 1 : 0;
+    debugPrint(buttonMovements[i]);
+    debugPrint(": ");
+    debugPrintln(buttonStates[i] == HIGH ? "1" : "0");
   }
-  
-  char jsonBuffer[200];
-  serializeJson(doc, jsonBuffer);
-  debugPrint("Message content: ");
-  debugPrintln(jsonBuffer);
   #endif
 }
 
