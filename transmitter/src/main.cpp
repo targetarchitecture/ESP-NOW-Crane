@@ -1,14 +1,14 @@
-#include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
-#include <esp_sleep.h>
-#include <esp_now.h>
+#include "esp_sleep.h"
 #include <WiFi.h>
+#include <esp_now.h>
+#include <ArduinoJson.h>
 
 // Debug mode - set to false to disable Serial output
-#define DEBUG_MODE true
+//#define DEBUG_MODE true
 
 // Define the WS2812 LED pin
-#define LED_MODE true
+//#define LED_MODE true
 #define LED_PIN 21
 #define NUM_LEDS 1
 
@@ -16,35 +16,57 @@
 const int buttonPins[] = { 1, 2, 3, 4, 5, 6 };
 const int numButtons = 6;
 
+const char* buttonMovements[] = {
+  "ANTICLOCKWISE",  // Button 1
+  "DOWN",           // Button 2
+  "OUT",            // Button 3
+  "CLOCKWISE",      // Button 4
+  "UP",             // Button 5
+  "IN"              // Button 6
+};
+
 // Define colors for each button (in RGB format)
 uint32_t buttonColors[] = {
-  0xFF9800, // Vivid Orange (Button 1 - ANTICLOCKWISE)  Y
-  0xD32F2F, // Deep Red (Button 2 - DOWN)              Y
-  0x2196F3, // Bright Blue (Button 3 - OUT)
-  0x4CAF50, // Green (Button 4 - CLOCKWISE)            Y
-  0x9C27B0, // Purple (Button 5 - UP)                 Y
-  0x00BCD4  // Cyan/Light Blue (Button 6 - IN)
+    0xFF9800,   // Vivid Orange (Button 1 - ANTICLOCKWISE)  Y
+    0xD32F2F,   // Deep Red (Button 2 - DOWN)               Y
+    0x2196F3,   // Bright Blue (Button 3 - OUT)
+    0x4CAF50,   // Green (Button 4 - CLOCKWISE)             Y
+    0x9C27B0,   // Purple (Button 5 - UP)                   Y
+    0x00BCD4    // Cyan/Light Blue (Button 6 - IN)
 };
 
 // Variables to keep track of button states
-int buttonStates[6] = {LOW, LOW, LOW, LOW, LOW, LOW};
-int lastButtonStates[6] = {LOW, LOW, LOW, LOW, LOW, LOW};
+int buttonStates[6] = { LOW, LOW, LOW, LOW, LOW, LOW };
+int lastButtonStates[6] = { LOW, LOW, LOW, LOW, LOW, LOW };
 
-unsigned long lastDebounceTime[6] = {0, 0, 0, 0, 0, 0};
-const unsigned long debounceDelay = 50; // Debounce time in milliseconds
+unsigned long lastDebounceTime[6] = { 0, 0, 0, 0, 0, 0 };
+const unsigned long debounceDelay = 50;  // Debounce time in milliseconds
 
 // ESP-NOW periodic update variables
-unsigned long lastEspNowUpdateTime = 0;
-const unsigned long espNowUpdateInterval = 500; // Send ESP-NOW update every 500ms (half second)
+unsigned long lastUpdateTime = 0;
+const unsigned long updateInterval = 500;  // Send update every 500ms (half second)
 
 // Sleep parameters
-const unsigned long sleepDelay = 3000; // Time in ms before going to sleep after button release
+const unsigned long sleepDelay = 3000;  // Time in ms before going to sleep after button release
 unsigned long buttonReleaseTime = 0;    // Time when the last button was released
-bool buttonPressed = false;            // Flag to track if any button is pressed
-bool readyToSleep = true;              // Flag to indicate ready to enter sleep
+bool buttonPressed = false;             // Flag to track if any button is pressed
+bool readyToSleep = true;               // Flag to indicate ready to enter sleep
 
-// ESP-NOW peer address (replace with your receiver's MAC address)
-uint8_t broadcastAddress[] = {0x3C, 0x71, 0xBF, 0x31, 0x5E, 0xF5};
+// ESP-NOW broadcast address (FF:FF:FF:FF:FF:FF broadcasts to all ESP-NOW devices in range)
+uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+// ESP-NOW message structure
+typedef struct crane_message {
+  int anticlockwise;
+  int down;
+  int out;
+  int clockwise;
+  int up;
+  int in;
+} crane_message;
+
+// Create message instance
+crane_message craneMsg;
 
 // Initialize the NeoPixel library
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
@@ -54,54 +76,76 @@ Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ
 #define debugPrintln(message) Serial.println(message)
 #define debugPrint(message) Serial.print(message)
 #else
-#define debugPrintln(message) // do nothing
-#define debugPrint(message)   // do nothing
+#define debugPrintln(message)  // do nothing
+#define debugPrint(message)    // do nothing
 #endif
 
-// Structure to send data
-typedef struct struct_message {
-  int ANTICLOCKWISE;
-  int DOWN;
-  int OUT;
-  int CLOCKWISE;
-  int UP;
-  int IN;
-} struct_message;
+// Callback function when data is sent
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  debugPrint("Last Packet Send Status: ");
+  debugPrintln(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+}
 
-struct_message myData;
+// Function to initialize ESP-NOW
+void initESPNow() {
+  // Set device as a Wi-Fi Station
+  WiFi.mode(WIFI_STA);
 
-// Callback when data is sent
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t sendStatus) {
-#if DEBUG_MODE
-  Serial.print("\r\nLast Packet Send Status:\t");
-  Serial.println(sendStatus == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
-#endif
+  // Init ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    debugPrintln("Error initializing ESP-NOW");
+    return;
+  }
+  
+  // Register send callback
+  esp_now_register_send_cb(OnDataSent);
+  
+  // Register peer
+  esp_now_peer_info_t peerInfo;
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = 0;  
+  peerInfo.encrypt = false;
+  
+  // Add peer        
+  if (esp_now_add_peer(&peerInfo) != ESP_OK){
+    debugPrintln("Failed to add peer");
+    return;
+  }
+  
+  debugPrintln("ESP-NOW initialized successfully");
 }
 
 // Function to send button states via ESP-NOW
 void sendButtonStates() {
-  myData.ANTICLOCKWISE = buttonStates[0];
-  myData.DOWN = buttonStates[1];
-  myData.OUT = buttonStates[2];
-  myData.CLOCKWISE = buttonStates[3];
-  myData.UP = buttonStates[4];
-  myData.IN = buttonStates[5];
+  // Update crane message structure
+  craneMsg.anticlockwise = buttonStates[0] == HIGH ? 1 : 0;
+  craneMsg.down = buttonStates[1] == HIGH ? 1 : 0;
+  craneMsg.out = buttonStates[2] == HIGH ? 1 : 0;
+  craneMsg.clockwise = buttonStates[3] == HIGH ? 1 : 0;
+  craneMsg.up = buttonStates[4] == HIGH ? 1 : 0;
+  craneMsg.in = buttonStates[5] == HIGH ? 1 : 0;
 
-  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &myData, sizeof(myData));
-
-#if DEBUG_MODE
+  // Send message via ESP-NOW
+  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &craneMsg, sizeof(craneMsg));
+  
   if (result == ESP_OK) {
-    Serial.println("ESP-NOW message sent");
-    Serial.print("ANTICLOCKWISE: "); Serial.print(myData.ANTICLOCKWISE); Serial.print(", ");
-    Serial.print("DOWN: "); Serial.print(myData.DOWN); Serial.print(", ");
-    Serial.print("OUT: "); Serial.print(myData.OUT); Serial.print(", ");
-    Serial.print("CLOCKWISE: "); Serial.print(myData.CLOCKWISE); Serial.print(", ");
-    Serial.print("UP: "); Serial.print(myData.UP); Serial.print(", ");
-    Serial.print("IN: "); Serial.println(myData.IN);
+    debugPrintln("ESP-NOW message sent successfully");
   } else {
-    Serial.println("Error sending ESP-NOW message");
+    debugPrintln("Error sending ESP-NOW message");
   }
-#endif
+  
+  // Additionally, create JSON for debug output
+  #if DEBUG_MODE
+  StaticJsonDocument<200> doc;
+  for (int i = 0; i < numButtons; i++) {
+    doc[buttonMovements[i]] = buttonStates[i] == HIGH ? 1 : 0;
+  }
+  
+  char jsonBuffer[200];
+  serializeJson(doc, jsonBuffer);
+  debugPrint("Message content: ");
+  debugPrintln(jsonBuffer);
+  #endif
 }
 
 // Get wake cause and button that triggered wake up
@@ -109,7 +153,8 @@ void printWakeupReason() {
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
 
   switch (wakeup_reason) {
-    case ESP_SLEEP_WAKEUP_EXT1: {
+    case ESP_SLEEP_WAKEUP_EXT1:
+      {
         uint64_t wakeup_pin_mask = esp_sleep_get_ext1_wakeup_status();
         debugPrintln("Wakeup caused by external signal using EXT1");
 
@@ -145,7 +190,7 @@ void setup() {
   // Initialize serial communication for debugging
 #if DEBUG_MODE
   Serial.begin(115200);
-  delay(100); // Short delay to ensure serial is ready
+  delay(100);  // Short delay to ensure serial is ready
 #endif
 
   debugPrintln("ESP32-S3 WS2812 LED Control with Deep Sleep and ESP-NOW");
@@ -154,11 +199,11 @@ void setup() {
   // Initialize the LED strip
 #if LED_MODE
   strip.begin();
-  strip.setBrightness(50); // Set brightness (0-255)
+  strip.setBrightness(50);  // Set brightness (0-255)
   strip.show();             // Initialize all pixels to 'off'
 
   // Set initial LED color to black/off
-  strip.setPixelColor(0, strip.Color(0, 0, 0)); // Explicitly set to black (R=0, G=0, B=0)
+  strip.setPixelColor(0, strip.Color(0, 0, 0));  // Explicitly set to black (R=0, G=0, B=0)
   strip.show();
 #endif
 
@@ -175,31 +220,7 @@ void setup() {
   printWakeupReason();
 
   // Initialize ESP-NOW
-  WiFi.mode(WIFI_STA);
-
-  if (esp_now_init() != ESP_OK) {
-#if DEBUG_MODE
-    Serial.println("Error initializing ESP-NOW");
-#endif
-    return;
-  }
-
-  // Register peer
-  esp_now_peer_info_t peerInfo;
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-  peerInfo.channel = 0;
-  peerInfo.encrypt = false;
-
-  // Add peer
-  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-#if DEBUG_MODE
-    Serial.println("Failed to add peer");
-#endif
-    return;
-  }
-
-  // Register for send callback
-  esp_now_register_send_cb(OnDataSent);
+  initESPNow();
 
   // Configure the wake-up source (all buttons)
   uint64_t mask = 0;
@@ -217,6 +238,7 @@ void loop() {
   //set variables
   bool anyButtonPressed = false;
   bool buttonStateChanged = false;
+  int activeButton = -1;
 
   // Check each button
   for (int i = 0; i < numButtons; i++) {
@@ -244,11 +266,12 @@ void loop() {
           debugPrint(buttonPins[i]);
           debugPrintln(" pressed");
 
+          activeButton = i;
           anyButtonPressed = true;
           buttonPressed = true;
           readyToSleep = false;
 
-          // Light up the LED with the color for this button
+// Light up the LED with the color for this button
 #if LED_MODE
           strip.setPixelColor(0, buttonColors[i]);
           strip.show();
@@ -277,7 +300,7 @@ void loop() {
     buttonReleaseTime = millis();
     readyToSleep = true;
 
-    // Turn off the LED when button is released
+// Turn off the LED when button is released
 #if LED_MODE
     strip.setPixelColor(0, strip.Color(0, 0, 0));
     strip.show();
@@ -290,9 +313,9 @@ void loop() {
   }
 
   // Send periodic ESP-NOW updates if any button is pressed
-  if (anyButtonPressed && (millis() - lastEspNowUpdateTime > espNowUpdateInterval)) {
+  if (anyButtonPressed && (millis() - lastUpdateTime > updateInterval)) {
     sendButtonStates();
-    lastEspNowUpdateTime = millis();
+    lastUpdateTime = millis();
   }
 
   // If it's time to sleep and we're ready
@@ -301,11 +324,13 @@ void loop() {
 #if DEBUG_MODE
     Serial.flush();
 #endif
-    // Make sure LED is off before sleep
+
+// Make sure LED is off before sleep
 #if LED_MODE
     strip.setPixelColor(0, strip.Color(0, 0, 0));
     strip.show();
 #endif
+
     // Enter deep sleep
     esp_deep_sleep_start();
   }
