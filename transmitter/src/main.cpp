@@ -2,13 +2,12 @@
 #include "esp_sleep.h"
 #include <WiFi.h>
 #include <esp_now.h>
-#include <ArduinoJson.h>
 
 // Debug mode - set to false to disable Serial output
-//#define DEBUG_MODE true
+#define DEBUG_MODE true
 
 // Define the WS2812 LED pin
-//#define LED_MODE true
+#define LED_MODE true
 #define LED_PIN 21
 #define NUM_LEDS 1
 
