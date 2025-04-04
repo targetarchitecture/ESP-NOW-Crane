@@ -4,16 +4,25 @@
 #include <esp_now.h>
 
 // Debug mode - set to false to disable Serial output
-#define DEBUG_MODE true
+//#define DEBUG_MODE true
 
 // Define the WS2812 LED pin
-#define LED_MODE true
+//#define LED_MODE true
 #define LED_PIN 21
 #define NUM_LEDS 1
 
 // Define the button pins
 const int buttonPins[] = { 1, 2, 3, 4, 5, 6 };
 const int numButtons = 6;
+
+const char* buttonMovements[] = {
+  "ANTICLOCKWISE",  // Button 1
+  "DOWN",           // Button 2
+  "OUT",            // Button 3
+  "CLOCKWISE",      // Button 4
+  "UP",             // Button 5
+  "IN"              // Button 6
+};
 
 // Define colors for each button (in RGB format)
 uint32_t buttonColors[] = {
@@ -73,27 +82,36 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 
 // Function to initialize ESP-NOW
 void initESPNow() {
-  // Set device as a Wi-Fi Station
+  // Set device as a Wi-Fi Station and disconnect from any AP
   WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);  // Give it time to change modes
 
   // Init ESP-NOW
   if (esp_now_init() != ESP_OK) {
     debugPrintln("Error initializing ESP-NOW");
+    // Try to restart ESP-NOW after a delay
+    delay(500);
+    ESP.restart();
     return;
   }
   
   // Register send callback
   esp_now_register_send_cb(OnDataSent);
   
-  // Register peer
-  esp_now_peer_info_t peerInfo;
+  // Register peer - make sure to zero out the structure first
+  esp_now_peer_info_t peerInfo = {};  // Initialize to all zeros
   memcpy(peerInfo.peer_addr, broadcastAddress, 6);
   peerInfo.channel = 0;  
   peerInfo.encrypt = false;
   
+  // Add peer - delete first if exists
+  esp_now_del_peer(broadcastAddress);  // Remove if exists (prevents duplicate errors)
+  
   // Add peer        
   if (esp_now_add_peer(&peerInfo) != ESP_OK){
     debugPrintln("Failed to add peer");
+    delay(500);
     return;
   }
   
@@ -109,6 +127,13 @@ void sendButtonStates() {
       craneMsg.buttonStates |= (1 << i);  // Set the bit for this button
     }
   }
+  
+  // Make sure WiFi is in the correct mode before sending
+  if (WiFi.getMode() != WIFI_STA) {
+    debugPrintln("WiFi not in STA mode. Fixing...");
+    WiFi.mode(WIFI_STA);
+    delay(10);
+  }
 
   // Send message via ESP-NOW
   esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &craneMsg, sizeof(craneMsg));
@@ -116,21 +141,45 @@ void sendButtonStates() {
   if (result == ESP_OK) {
     debugPrintln("ESP-NOW message sent successfully");
   } else {
-    debugPrintln("Error sending ESP-NOW message");
+    // Define peerInfo outside the switch to avoid compiler error
+    esp_now_peer_info_t peerInfo = {};
+    
+    debugPrint("Error sending ESP-NOW message: ");
+    switch (result) {
+      case ESP_ERR_ESPNOW_NOT_INIT:
+        debugPrintln("ESP-NOW not initialized");
+        // Try to reinitialize
+        esp_now_deinit();
+        delay(10);
+        initESPNow();
+        break;
+      case ESP_ERR_ESPNOW_ARG:
+        debugPrintln("Invalid argument");
+        break;
+      case ESP_ERR_ESPNOW_INTERNAL:
+        debugPrintln("Internal error");
+        break;
+      case ESP_ERR_ESPNOW_NO_MEM:
+        debugPrintln("Out of memory");
+        break;
+      case ESP_ERR_ESPNOW_NOT_FOUND:
+        debugPrintln("Peer not found");
+        // Try to re-add the peer
+        memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+        peerInfo.channel = 0;
+        peerInfo.encrypt = false;
+        esp_now_add_peer(&peerInfo);
+        break;
+      case ESP_ERR_ESPNOW_IF:
+        debugPrintln("Interface error");
+        break;
+      default:
+        debugPrintln("Unknown error");
+    }
   }
   
   // Debug output without JSON
   #if DEBUG_MODE
-
-  const char* buttonMovements[] = {
-    "ANTICLOCKWISE",  // Button 1
-    "DOWN",           // Button 2
-    "OUT",            // Button 3
-    "CLOCKWISE",      // Button 4
-    "UP",             // Button 5
-    "IN"              // Button 6
-  };
-
   debugPrintln("Button states:");
   for (int i = 0; i < numButtons; i++) {
     debugPrint(buttonMovements[i]);
@@ -182,11 +231,11 @@ void setup() {
   // Initialize serial communication for debugging
 #if DEBUG_MODE
   Serial.begin(115200);
-  delay(100);  // Short delay to ensure serial is ready
+  delay(500);  // Longer delay to ensure serial is ready
 #endif
 
   debugPrintln("ESP32-S3 WS2812 LED Control with Deep Sleep and ESP-NOW");
-  delay(10);
+  delay(100);  // Give more time for initialization
 
   // Initialize the LED strip
 #if LED_MODE
@@ -211,8 +260,25 @@ void setup() {
   // Check if the ESP32 woke up from deep sleep
   printWakeupReason();
 
-  // Initialize ESP-NOW
-  initESPNow();
+  // Initialize ESP-NOW with retry mechanism
+  for (int retry = 0; retry < 3; retry++) {
+    initESPNow();
+    delay(100);
+    
+    // Test if ESP-NOW is working by sending a test message
+    craneMsg.buttonStates = 0;  // All buttons released
+    esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &craneMsg, sizeof(craneMsg));
+    
+    if (result == ESP_OK) {
+      debugPrintln("ESP-NOW test message successful");
+      break;
+    } else {
+      debugPrint("ESP-NOW initialization attempt ");
+      debugPrint(retry + 1);
+      debugPrintln(" failed, retrying...");
+      delay(500);
+    }
+  }
 
   // Configure the wake-up source (all buttons)
   uint64_t mask = 0;
