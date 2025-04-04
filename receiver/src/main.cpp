@@ -9,15 +9,10 @@
 #include <string>
 #include <Adafruit_NeoPixel.h>
 
-// Structure to send data
-typedef struct struct_message {
-    int ANTICLOCKWISE;
-    int DOWN;
-    int OUT;
-    int CLOCKWISE;
-    int UP;
-    int IN;
-} struct_message;
+// Structure to receive data (updated to match transmitter format)
+typedef struct crane_message {
+    uint8_t buttonStates;  // Bitwise button states
+} crane_message;
 
 // Map to store button states and their corresponding values
 // 0 = inactive/off, 1 = active/on
@@ -45,9 +40,6 @@ struct Config {
     // WiFi Network Configuration
     char wifi_ssid[32] = "the robot network"; // WiFi network name
     char wifi_password[32] = "isaacasimov";   // WiFi network password
-
-    // ESP-NOW Configuration
-    uint8_t controller_mac[6] = {0x3C, 0x71, 0xBF, 0x31, 0x5E, 0xF5}; // Controller MAC address (broadcast by default)
 
     // System Timing Configuration
     int wifi_timeout = 20;      // WiFi connection timeout (seconds)
@@ -209,7 +201,7 @@ bool setupESPNow() {
     return true;
 }
 
-// Callback function for ESP-NOW data reception
+// Callback function for ESP-NOW data reception (updated for new message format)
 void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t len) {
     // Update last message time
     lastMessageTime = millis();
@@ -217,22 +209,33 @@ void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t len) {
     debugPrintln("ESP-NOW message received");
 
     // Check if data is valid
-    if (len != sizeof(struct_message)) {
+    if (len != sizeof(crane_message)) {
         debugPrintln("Invalid data length");
         return;
     }
 
-    // Cast the received data to the struct_message type
-    struct_message receivedData;
-    memcpy(&receivedData, data, sizeof(receivedData));
-
-    // Update button states from received data
-    buttons["ANTICLOCKWISE"] = receivedData.ANTICLOCKWISE;
-    buttons["CLOCKWISE"] = receivedData.CLOCKWISE;
-    buttons["UP"] = receivedData.UP;
-    buttons["DOWN"] = receivedData.DOWN;
-    buttons["OUT"] = receivedData.OUT;
-    buttons["IN"] = receivedData.IN;
+    // Cast the received data to the crane_message type
+    crane_message* msg = (crane_message*)data;
+    
+    // Extract button states from bitwise format
+    buttons["ANTICLOCKWISE"] = (msg->buttonStates & (1 << 0)) ? 1 : 0;
+    buttons["DOWN"] = (msg->buttonStates & (1 << 1)) ? 1 : 0;
+    buttons["OUT"] = (msg->buttonStates & (1 << 2)) ? 1 : 0;
+    buttons["CLOCKWISE"] = (msg->buttonStates & (1 << 3)) ? 1 : 0;
+    buttons["UP"] = (msg->buttonStates & (1 << 4)) ? 1 : 0;
+    buttons["IN"] = (msg->buttonStates & (1 << 5)) ? 1 : 0;
+    
+    // Debug button states
+    #if DEBUG_MODE
+    debugPrint("Button states: ");
+    debugPrint("ANTICLOCKWISE: "); debugPrint(buttons["ANTICLOCKWISE"]);
+    debugPrint(", DOWN: "); debugPrint(buttons["DOWN"]);
+    debugPrint(", OUT: "); debugPrint(buttons["OUT"]);
+    debugPrint(", CLOCKWISE: "); debugPrint(buttons["CLOCKWISE"]);
+    debugPrint(", UP: "); debugPrint(buttons["UP"]);
+    debugPrint(", IN: "); debugPrint(buttons["IN"]);
+    debugPrintln("");
+    #endif
 
     // Execute motor control based on updated button states
     controlMotor();
