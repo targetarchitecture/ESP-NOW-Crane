@@ -7,22 +7,13 @@
 //#define DEBUG_MODE true
 
 // Define the WS2812 LED pin
-//#define LED_MODE true
+#define LED_MODE true
 #define LED_PIN 21
 #define NUM_LEDS 1
 
 // Define the button pins
 const int buttonPins[] = { 1, 2, 3, 4, 5, 6 };
 const int numButtons = 6;
-
-const char* buttonMovements[] = {
-  "ANTICLOCKWISE",  // Button 1
-  "DOWN",           // Button 2
-  "OUT",            // Button 3
-  "CLOCKWISE",      // Button 4
-  "UP",             // Button 5
-  "IN"              // Button 6
-};
 
 // Define colors for each button (in RGB format)
 uint32_t buttonColors[] = {
@@ -43,7 +34,7 @@ const unsigned long debounceDelay = 50;  // Debounce time in milliseconds
 
 // ESP-NOW periodic update variables
 unsigned long lastUpdateTime = 0;
-const unsigned long updateInterval = 500;  // Send update every 500ms (half second)
+const unsigned long updateInterval = 250;  // Send update every 250ms (quarter second)
 
 // Sleep parameters
 const unsigned long sleepDelay = 3000;  // Time in ms before going to sleep after button release
@@ -180,6 +171,16 @@ void sendButtonStates() {
   
   // Debug output without JSON
   #if DEBUG_MODE
+
+  const char* buttonMovements[] = {
+    "ANTICLOCKWISE",  // Button 1
+    "DOWN",           // Button 2
+    "OUT",            // Button 3
+    "CLOCKWISE",      // Button 4
+    "UP",             // Button 5
+    "IN"              // Button 6
+  };
+  
   debugPrintln("Button states:");
   for (int i = 0; i < numButtons; i++) {
     debugPrint(buttonMovements[i]);
