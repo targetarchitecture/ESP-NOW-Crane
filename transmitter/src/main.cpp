@@ -15,15 +15,6 @@
 const int buttonPins[] = { 1, 2, 3, 4, 5, 6 };
 const int numButtons = 6;
 
-const char* buttonMovements[] = {
-  "ANTICLOCKWISE",  // Button 1
-  "DOWN",           // Button 2
-  "OUT",            // Button 3
-  "CLOCKWISE",      // Button 4
-  "UP",             // Button 5
-  "IN"              // Button 6
-};
-
 // Define colors for each button (in RGB format)
 uint32_t buttonColors[] = {
     0xFF9800,   // Vivid Orange (Button 1 - ANTICLOCKWISE)  Y
@@ -130,6 +121,16 @@ void sendButtonStates() {
   
   // Debug output without JSON
   #if DEBUG_MODE
+
+  const char* buttonMovements[] = {
+    "ANTICLOCKWISE",  // Button 1
+    "DOWN",           // Button 2
+    "OUT",            // Button 3
+    "CLOCKWISE",      // Button 4
+    "UP",             // Button 5
+    "IN"              // Button 6
+  };
+
   debugPrintln("Button states:");
   for (int i = 0; i < numButtons; i++) {
     debugPrint(buttonMovements[i]);
