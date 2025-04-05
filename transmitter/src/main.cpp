@@ -85,15 +85,20 @@ void initESPNow() {
     return;
   }
   
-  // Once ESPNow is successfully Init, we will register for Send CB to
-  // get the status of Trasnmitted packet
-  esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
-
   // Register send callback
   esp_now_register_send_cb(OnDataSent);
 
-    // Register peer
-  esp_now_add_peer(broadcastAddress, ESP_NOW_ROLE_SLAVE, 1, NULL, 0);
+  // Register peer
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = 0;  
+  peerInfo.encrypt = false;
+  
+  // Add peer
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    debugPrintln("Failed to add peer");
+    return;
+  }
 
   debugPrintln("ESP-NOW initialized successfully");
 }
