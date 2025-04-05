@@ -1,8 +1,5 @@
 #include <ESP8266WiFi.h>
 #include <espnow.h>
-#include <ESP8266mDNS.h>
-#include <WiFiUdp.h>
-#include <ArduinoOTA.h>
 #include <Wire.h>
 #include <LOLIN_I2C_MOTOR.h>
 #include <map>
@@ -26,14 +23,10 @@ std::map<std::string, int> buttons = {
 };
 
 // Debug mode flag - enables/disables Serial output for debugging
-//#define DEBUG_MODE true
+#define DEBUG_MODE true
 
 // Configuration structure to store all system settings
 struct Config {
-    // OTA (Over-The-Air) Update Configuration
-    char hostname[32] = "crane-controller";   // Device hostname for network identification
-    char ota_password[32] = "xxx";            // Password for OTA updates
-
     // Motor Control Configuration
     uint8_t motor_speed = 100;    // Default motor speed (0-100%)
 
@@ -52,6 +45,7 @@ LOLIN_I2C_MOTOR motor2(0x21);  // Second motor board at I2C address 0x21
 // System state tracking
 unsigned long lastMessageTime = 0;    // Timestamp of last received ESP-NOW message
 const unsigned long MESSAGE_TIMEOUT = 1000;    // Timeout period in milliseconds (1 second)
+const unsigned long COLOR_CHANGE_DURATION = 3000; // Duration to show the message color before returning to animation
 
 // ESP-NOW communication status
 bool espNowInitialized = false;
@@ -74,48 +68,36 @@ bool espNowInitialized = false;
 Adafruit_NeoPixel pixels(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 int currentLED = 1;
+
+// Default red colors for the animation
 const uint32_t BRIGHT_RED = 0xFF0000;
 const uint32_t MID_RED = 0xA00000;
 const uint32_t DIM_RED = 0x500000;
 const uint32_t VERY_DIM_RED = 0x200000;
 
+// Colors for message indication
+const uint32_t BRIGHT_GREEN = 0x00FF00;
+const uint32_t MID_GREEN = 0x00A000;
+const uint32_t DIM_GREEN = 0x005000;
+const uint32_t VERY_DIM_GREEN = 0x002000;
+
+// Current color scheme (0 = red, 1 = green)
+int currentColorScheme = 0;
+
 unsigned long previousCenterBlinkMillis = 0;
 unsigned long previousAnimationMillis = 0;
+unsigned long colorChangeStartTime = 0;
 
 const long centerBlinkInterval = 1000;
 const long animationInterval = 60;
 
 bool centerLedState = false;
 bool animationRunning = true;
+bool messageReceived = false;
 
 void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t len);
-
-// Attempts to connect to WiFi network for OTA updates
-bool connectToWiFi() {
-    debugPrintln("Connecting to WiFi for OTA...");
-    WiFi.mode(WIFI_STA);  // Set WiFi mode to Station (client)
-    WiFi.begin(config.wifi_ssid, config.wifi_password);
-
-    // Wait for connection with timeout
-    int timeout = 0;
-    while (WiFi.status() != WL_CONNECTED && timeout < config.wifi_timeout) {
-        delay(500);
-        debugPrint(".");
-        timeout++;
-    }
-
-    // Report connection status
-    if (WiFi.status() == WL_CONNECTED) {
-        debugPrintln("");
-        debugPrint("Connected to WiFi network with IP Address: ");
-        debugPrintln(WiFi.localIP());
-        return true;
-    } else {
-        debugPrintln("");
-        debugPrintln("Failed to connect to WiFi");
-        return false;
-    }
-}
+void updateLEDs();
+bool anyButtonPressed();
 
 // Initialize and verify motor shield connections
 void setupMotors() {
@@ -185,6 +167,9 @@ void controlMotor() {
 
 // Initialize ESP-NOW
 bool setupESPNow() {
+    Serial.print("ESP Board MAC Address:  ");
+    Serial.println(WiFi.macAddress());
+
     // Init ESP-NOW
     if (esp_now_init() != 0) {
         debugPrintln("Error initializing ESP-NOW");
@@ -237,98 +222,76 @@ void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t len) {
     debugPrintln("");
     #endif
 
+    // Change LED color to green when message is received
+    if (anyButtonPressed()) {
+        currentColorScheme = 1; // Change to green color scheme
+        colorChangeStartTime = millis(); // Start the timer for color display
+        messageReceived = true;
+        updateLEDs(); // Update LEDs immediately
+    }
+
     // Execute motor control based on updated button states
     controlMotor();
 }
 
-// Configure Over-The-Air update functionality
-void setupOTA() {
-    // Set device hostname for network identification
-    ArduinoOTA.setHostname(config.hostname);
-
-    // Set OTA update password
-    ArduinoOTA.setPassword(config.ota_password);
-
-    // Configure OTA event handlers
-    ArduinoOTA.onStart([]() {
-        String type;
-        if (ArduinoOTA.getCommand() == U_FLASH)
-            type = "sketch";
-        else  // U_SPIFFS
-            type = "filesystem";
-
-        // Stop motors during update
-        stopAllMotors();
-
-        debugPrintln("Start updating " + type);
-    });
-
-    // Handle OTA completion
-    ArduinoOTA.onEnd([]() {
-        debugPrintln("\nOTA Update Complete");
-
-        // Re-initialize ESP-NOW after OTA update
-        setupESPNow();
-    });
-
-    // Display update progress
-    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-        debugPrint("Progress: ");
-        debugPrint(progress / (total / 100));
-        debugPrintln("%");
-    });
-
-    // Handle OTA errors
-    ArduinoOTA.onError([](ota_error_t error) {
-        debugPrint("Error[");
-        debugPrint(error);
-        debugPrintln("]: ");
-
-        if (error == OTA_AUTH_ERROR) debugPrintln("Auth Failed");
-        else if (error == OTA_BEGIN_ERROR) debugPrintln("Begin Failed");
-        else if (error == OTA_CONNECT_ERROR) debugPrintln("Connect Failed");
-        else if (error == OTA_RECEIVE_ERROR) debugPrintln("Receive Failed");
-        else if (error == OTA_END_ERROR) debugPrintln("End Failed");
-
-        // Re-initialize ESP-NOW after OTA error
-        setupESPNow();
-    });
-
-    // Start OTA service
-    ArduinoOTA.begin();
-    debugPrintln("OTA Update Service Started");
+// Check if any button is pressed
+bool anyButtonPressed() {
+    return (buttons["ANTICLOCKWISE"] == 1 || 
+            buttons["DOWN"] == 1 || 
+            buttons["OUT"] == 1 || 
+            buttons["CLOCKWISE"] == 1 || 
+            buttons["UP"] == 1 || 
+            buttons["IN"] == 1);
 }
 
 void updateLEDs() {
     pixels.clear();
+    
+    uint32_t brightColor, midColor, dimColor, veryDimColor;
+    
+    // Select color scheme based on state
+    if (currentColorScheme == 0) {
+        // Default red color scheme
+        brightColor = BRIGHT_RED;
+        midColor = MID_RED;
+        dimColor = DIM_RED;
+        veryDimColor = VERY_DIM_RED;
+    } else {
+        // Green color scheme for message indication
+        brightColor = BRIGHT_GREEN;
+        midColor = MID_GREEN;
+        dimColor = DIM_GREEN;
+        veryDimColor = VERY_DIM_GREEN;
+    }
+    
     if (centerLedState) {
-        pixels.setPixelColor(CENTER_LED, MID_RED);
+        pixels.setPixelColor(CENTER_LED, midColor);
     }
 
     int mainLED = ((currentLED - 1) / 2) + 1;
 
     if (currentLED % 2 == 1) {
-        pixels.setPixelColor(mainLED, BRIGHT_RED);
+        pixels.setPixelColor(mainLED, brightColor);
 
         int prevLED = (mainLED == 1) ? 6 : mainLED - 1;
         int prevPrevLED = (prevLED == 1) ? 6 : prevLED - 1;
 
-        pixels.setPixelColor(prevLED, MID_RED);
-        pixels.setPixelColor(prevPrevLED, DIM_RED);
+        pixels.setPixelColor(prevLED, midColor);
+        pixels.setPixelColor(prevPrevLED, dimColor);
 
         int prevPrevPrevLED = (prevPrevLED == 1) ? 6 : prevPrevLED - 1;
-        pixels.setPixelColor(prevPrevPrevLED, VERY_DIM_RED);
+        pixels.setPixelColor(prevPrevPrevLED, veryDimColor);
     } else {
         int nextLED = (mainLED == 6) ? 1 : mainLED + 1;
 
-        pixels.setPixelColor(mainLED, BRIGHT_RED);
-        pixels.setPixelColor(nextLED, MID_RED);
+        pixels.setPixelColor(mainLED, brightColor);
+        pixels.setPixelColor(nextLED, midColor);
 
         int prevLED = (mainLED == 1) ? 6 : mainLED - 1;
         int prevPrevLED = (prevLED == 1) ? 6 : prevLED - 1;
 
-        pixels.setPixelColor(prevLED, DIM_RED);
-        pixels.setPixelColor(prevPrevLED, VERY_DIM_RED);
+        pixels.setPixelColor(prevLED, dimColor);
+        pixels.setPixelColor(prevPrevLED, veryDimColor);
     }
     pixels.show();
 }
@@ -346,22 +309,10 @@ void setup() {
     Wire.begin();
 
     // Initialize motor shields
-    setupMotors();
+    //setupMotors();
 
     // Initialize last message time
     lastMessageTime = millis();
-
-    // Connect to WiFi for OTA updates
-    if (connectToWiFi()) {
-        // Setup OTA update capability
-        setupOTA();
-    } else {
-        // If WiFi connection fails, switch to ESP-NOW only mode
-        WiFi.disconnect();
-        // Need to set STA mode even without connecting to a network for ESP-NOW
-        WiFi.mode(WIFI_STA);
-        WiFi.disconnect();
-    }
 
     // Setup ESP-NOW after WiFi is configured
     espNowInitialized = setupESPNow();
@@ -377,9 +328,6 @@ void setup() {
 
 // Main program loop
 void loop() {
-    // Handle any pending OTA updates
-    ArduinoOTA.handle();
-
     // Check for message timeout
     if (millis() - lastMessageTime > MESSAGE_TIMEOUT) {
         // Reset all button states
@@ -391,7 +339,7 @@ void loop() {
         buttons["IN"] = 0;
 
         // Stop all motors
-        stopAllMotors();
+        //stopAllMotors();
     }
 
     // If ESP-NOW is not initialized, try to set it up
@@ -401,6 +349,13 @@ void loop() {
 
     unsigned long currentMillis = millis();
     bool updateDisplay = false;
+
+    // Check if we need to revert color scheme
+    if (messageReceived && currentMillis - colorChangeStartTime >= COLOR_CHANGE_DURATION) {
+        currentColorScheme = 0; // Switch back to red color scheme
+        messageReceived = false;
+        updateDisplay = true;
+    }
 
     if (currentMillis - previousCenterBlinkMillis >= centerBlinkInterval) {
         previousCenterBlinkMillis = currentMillis;

@@ -4,7 +4,7 @@
 #include <esp_now.h>
 
 // Debug mode - set to false to disable Serial output
-//#define DEBUG_MODE true
+#define DEBUG_MODE true
 
 // Define the WS2812 LED pin
 #define LED_MODE true
@@ -42,8 +42,8 @@ unsigned long buttonReleaseTime = 0;    // Time when the last button was release
 bool buttonPressed = false;             // Flag to track if any button is pressed
 bool readyToSleep = true;               // Flag to indicate ready to enter sleep
 
-// ESP-NOW broadcast address (FF:FF:FF:FF:FF:FF broadcasts to all ESP-NOW devices in range)
-uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+// REPLACE WITH RECEIVER MAC Address
+uint8_t broadcastAddress[] = {0xB4, 0xE6, 0x2D, 0x53, 0xAF, 0x58};
 
 // ESP-NOW message structure - compact binary format
 typedef struct crane_message {
@@ -75,8 +75,6 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 void initESPNow() {
   // Set device as a Wi-Fi Station and disconnect from any AP
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(100);  // Give it time to change modes
 
   // Init ESP-NOW
   if (esp_now_init() != ESP_OK) {
@@ -87,25 +85,16 @@ void initESPNow() {
     return;
   }
   
+  // Once ESPNow is successfully Init, we will register for Send CB to
+  // get the status of Trasnmitted packet
+  esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
+
   // Register send callback
   esp_now_register_send_cb(OnDataSent);
-  
-  // Register peer - make sure to zero out the structure first
-  esp_now_peer_info_t peerInfo = {};  // Initialize to all zeros
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-  peerInfo.channel = 0;  
-  peerInfo.encrypt = false;
-  
-  // Add peer - delete first if exists
-  esp_now_del_peer(broadcastAddress);  // Remove if exists (prevents duplicate errors)
-  
-  // Add peer        
-  if (esp_now_add_peer(&peerInfo) != ESP_OK){
-    debugPrintln("Failed to add peer");
-    delay(500);
-    return;
-  }
-  
+
+    // Register peer
+  esp_now_add_peer(broadcastAddress, ESP_NOW_ROLE_SLAVE, 1, NULL, 0);
+
   debugPrintln("ESP-NOW initialized successfully");
 }
 
