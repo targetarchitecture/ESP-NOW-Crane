@@ -7,44 +7,27 @@
 #include <Adafruit_NeoPixel.h>
 
 // Structure to receive data (updated to match transmitter format)
-typedef struct crane_message {
-    uint8_t buttonStates;  // Bitwise button states
+typedef struct crane_message
+{
+    uint8_t buttonStates; // Bitwise button states
 } crane_message;
-
-// Map to store button states and their corresponding values
-// 0 = inactive/off, 1 = active/on
-std::map<std::string, int> buttons = {
-    { "ANTICLOCKWISE", 0 },  // Controls rotation counter-clockwise
-    { "DOWN", 0 },           // Controls downward movement
-    { "OUT", 0 },            // Controls extension outward
-    { "CLOCKWISE", 0 },      // Controls rotation clockwise
-    { "UP", 0 },             // Controls upward movement
-    { "IN", 0 }              // Controls retraction inward
-};
 
 // Debug mode flag - enables/disables Serial output for debugging
 #define DEBUG_MODE true
 
-// Configuration structure to store all system settings
-struct Config {
-    // Motor Control Configuration
-    uint8_t motor_speed = 100;    // Default motor speed (0-100%)
-
-    // WiFi Network Configuration
-    char wifi_ssid[32] = "the robot network"; // WiFi network name
-    char wifi_password[32] = "isaacasimov";   // WiFi network password
-
-    // System Timing Configuration
-    int wifi_timeout = 20;      // WiFi connection timeout (seconds)
-} config;
+// Motor Control Configuration
+uint8_t motor_speed = 100; // Default motor speed (0-100%)
 
 // Initialize motor control objects with their I2C addresses
-LOLIN_I2C_MOTOR motor1(0x20);  // First motor board at I2C address 0x20
-LOLIN_I2C_MOTOR motor2(0x21);  // Second motor board at I2C address 0x21
+LOLIN_I2C_MOTOR motor1(0x20); // First motor board at I2C address 0x20
+LOLIN_I2C_MOTOR motor2(0x21); // Second motor board at I2C address 0x21
+
+// Global flag to track motor initialization
+bool motorsConnected = false;
 
 // System state tracking
-unsigned long lastMessageTime = 0;    // Timestamp of last received ESP-NOW message
-const unsigned long MESSAGE_TIMEOUT = 1000;    // Timeout period in milliseconds (1 second)
+unsigned long lastMessageTime = 0;                // Timestamp of last received ESP-NOW message
+const unsigned long MESSAGE_TIMEOUT = 1000;       // Timeout period in milliseconds (1 second)
 const unsigned long COLOR_CHANGE_DURATION = 3000; // Duration to show the message color before returning to animation
 
 // ESP-NOW communication status
@@ -55,12 +38,12 @@ bool espNowInitialized = false;
 #define debugPrintln(message) Serial.println(message)
 #define debugPrint(message) Serial.print(message)
 #else
-#define debugPrintln(message)  // Debug messages disabled
+#define debugPrintln(message) // Debug messages disabled
 #define debugPrint(message)   // Debug messages disabled
 #endif
 
 // NeoPixel LED configuration
-#define LED_PIN D4 // GPIO pin connected to the NeoPixel data line.
+#define LED_PIN D4  // GPIO pin connected to the NeoPixel data line.
 #define LED_COUNT 7 // Number of LEDs in your NeoPixel strip.
 #define CENTER_LED 0
 #define STEPS_PER_CYCLE 12
@@ -97,25 +80,47 @@ bool messageReceived = false;
 
 void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t len);
 void updateLEDs();
-bool anyButtonPressed();
+bool anyButtonPressed(uint8_t buttonStates);
 
 // Initialize and verify motor shield connections
-void setupMotors() {
+void setupMotors()
+{
+    if (!motorsConnected)
+    {
+        debugPrintln("Motors not contected, not looking for them");
+        return;
+    }
+
     // Wait for first motor board to be ready
-    while (motor1.PRODUCT_ID != PRODUCT_ID_I2C_MOTOR) {
+    while (motor1.PRODUCT_ID != PRODUCT_ID_I2C_MOTOR)
+    {
         motor1.getInfo();
         delay(5);
+
+        // Could add timeout here if needed
     }
 
     // Wait for second motor board to be ready
-    while (motor2.PRODUCT_ID != PRODUCT_ID_I2C_MOTOR) {
+    while (motor2.PRODUCT_ID != PRODUCT_ID_I2C_MOTOR)
+    {
         motor2.getInfo();
         delay(5);
+
+        // Could add timeout here if needed
     }
+
+    debugPrintln("Motors initialized successfully");
 }
 
 // Emergency stop function - stops all motors immediately
-void stopAllMotors() {
+void stopAllMotors()
+{
+    if (!motorsConnected)
+    {
+        //debugPrintln("Motors not connected, cannot stop");
+        return;
+    }
+
     // Stop all motors on both boards
     motor1.changeStatus(MOTOR_CH_BOTH, MOTOR_STATUS_STOP);
     motor2.changeStatus(MOTOR_CH_BOTH, MOTOR_STATUS_STOP);
@@ -124,54 +129,100 @@ void stopAllMotors() {
 }
 
 // Controls motor movement based on button states
-void controlMotor() {
+void controlMotor(uint8_t buttonStates)
+{
+
+
+    uint8_t ANTICLOCKWISE = (buttonStates & (1 << 0)) ? 1 : 0;
+    uint8_t DOWN = (buttonStates & (1 << 1)) ? 1 : 0;
+    uint8_t OUT = (buttonStates & (1 << 2)) ? 1 : 0;
+    uint8_t CLOCKWISE = (buttonStates & (1 << 3)) ? 1 : 0;
+    uint8_t UP = (buttonStates & (1 << 4)) ? 1 : 0;
+    uint8_t IN = (buttonStates & (1 << 5)) ? 1 : 0;
+
+    Serial.print("ANTICLOCKWISE: ");
+    Serial.println(ANTICLOCKWISE);
+    Serial.print("DOWN: ");
+    Serial.println(DOWN);
+    Serial.print("OUT: ");
+    Serial.println(OUT);
+    Serial.print("CLOCKWISE: ");
+    Serial.println(CLOCKWISE);
+    Serial.print("UP: ");
+    Serial.println(UP);
+    Serial.print("IN: ");
+    Serial.println(IN);
+
+    if (!motorsConnected)
+    {
+        // debugPrintln("Motors not initialized, cannot control");
+        return;
+    }
+
     // Rotation control (Motor A on first board)
-    if (buttons["ANTICLOCKWISE"] == 1 && buttons["CLOCKWISE"] == 0) {
+    if (ANTICLOCKWISE == 1 && CLOCKWISE == 0)
+    {
         motor1.changeStatus(MOTOR_CH_A, MOTOR_STATUS_CCW);
-        motor1.changeDuty(MOTOR_CH_A, config.motor_speed);
+        motor1.changeDuty(MOTOR_CH_A, motor_speed);
     }
-    if (buttons["ANTICLOCKWISE"] == 0 && buttons["CLOCKWISE"] == 1) {
+    if (ANTICLOCKWISE == 0 && CLOCKWISE == 1)
+    {
         motor1.changeStatus(MOTOR_CH_A, MOTOR_STATUS_CW);
-        motor1.changeDuty(MOTOR_CH_A, config.motor_speed);
+        motor1.changeDuty(MOTOR_CH_A, motor_speed);
     }
-    if (buttons["ANTICLOCKWISE"] == 0 && buttons["CLOCKWISE"] == 0) {
+    if (ANTICLOCKWISE == 0 && CLOCKWISE == 0)
+    {
         motor1.changeStatus(MOTOR_CH_A, MOTOR_STATUS_STOP);
     }
 
     // Vertical movement control (Motor B on first board)
-    if (buttons["UP"] == 1 && buttons["DOWN"] == 0) {
+    if (UP == 1 && DOWN == 0)
+    {
         motor1.changeStatus(MOTOR_CH_B, MOTOR_STATUS_CCW);
-        motor1.changeDuty(MOTOR_CH_B, config.motor_speed);
+        motor1.changeDuty(MOTOR_CH_B, motor_speed);
     }
-    if (buttons["UP"] == 0 && buttons["DOWN"] == 1) {
+    if (UP == 0 && DOWN == 1)
+    {
         motor1.changeStatus(MOTOR_CH_B, MOTOR_STATUS_CW);
-        motor1.changeDuty(MOTOR_CH_B, config.motor_speed);
+        motor1.changeDuty(MOTOR_CH_B, motor_speed);
     }
-    if (buttons["UP"] == 0 && buttons["DOWN"] == 0) {
+    if (UP == 0 && DOWN == 0)
+    {
         motor1.changeStatus(MOTOR_CH_B, MOTOR_STATUS_STOP);
     }
 
     // Extension control (Motor A on second board)
-    if (buttons["IN"] == 1 && buttons["OUT"] == 0) {
+    if (IN == 1 && OUT == 0)
+    {
         motor2.changeStatus(MOTOR_CH_B, MOTOR_STATUS_CCW);
-        motor2.changeDuty(MOTOR_CH_B, config.motor_speed);
+        motor2.changeDuty(MOTOR_CH_B, motor_speed);
     }
-    if (buttons["IN"] == 0 && buttons["OUT"] == 1) {
+    if (IN == 0 && OUT == 1)
+    {
         motor2.changeStatus(MOTOR_CH_B, MOTOR_STATUS_CW);
-        motor2.changeDuty(MOTOR_CH_B, config.motor_speed);
+        motor2.changeDuty(MOTOR_CH_B, motor_speed);
     }
-    if (buttons["IN"] == 0 && buttons["OUT"] == 0) {
+    if (IN == 0 && OUT == 0)
+    {
         motor2.changeStatus(MOTOR_CH_B, MOTOR_STATUS_STOP);
     }
 }
 
 // Initialize ESP-NOW
-bool setupESPNow() {
+bool setupESPNow()
+{
+    // Set device as a Wi-Fi Station and disconnect from any AP
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    delay(100); // Short delay to ensure WiFi mode is set
+
+    // Print MAC address
     Serial.print("ESP Board MAC Address:  ");
     Serial.println(WiFi.macAddress());
 
     // Init ESP-NOW
-    if (esp_now_init() != 0) {
+    if (esp_now_init() != 0)
+    {
         debugPrintln("Error initializing ESP-NOW");
         return false;
     }
@@ -187,90 +238,82 @@ bool setupESPNow() {
 }
 
 // Callback function for ESP-NOW data reception (updated for new message format)
-void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t len) {
+void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t len)
+{
     // Update last message time
     lastMessageTime = millis();
 
     debugPrintln("ESP-NOW message received");
 
     // Check if data is valid
-    if (len != sizeof(crane_message)) {
+    if (len != sizeof(crane_message))
+    {
         debugPrintln("Invalid data length");
         return;
     }
 
     // Cast the received data to the crane_message type
-    crane_message* msg = (crane_message*)data;
-    
-    // Extract button states from bitwise format
-    buttons["ANTICLOCKWISE"] = (msg->buttonStates & (1 << 0)) ? 1 : 0;
-    buttons["DOWN"] = (msg->buttonStates & (1 << 1)) ? 1 : 0;
-    buttons["OUT"] = (msg->buttonStates & (1 << 2)) ? 1 : 0;
-    buttons["CLOCKWISE"] = (msg->buttonStates & (1 << 3)) ? 1 : 0;
-    buttons["UP"] = (msg->buttonStates & (1 << 4)) ? 1 : 0;
-    buttons["IN"] = (msg->buttonStates & (1 << 5)) ? 1 : 0;
-    
-    // Debug button states
-    #if DEBUG_MODE
-    debugPrint("Button states: ");
-    debugPrint("ANTICLOCKWISE: "); debugPrint(buttons["ANTICLOCKWISE"]);
-    debugPrint(", DOWN: "); debugPrint(buttons["DOWN"]);
-    debugPrint(", OUT: "); debugPrint(buttons["OUT"]);
-    debugPrint(", CLOCKWISE: "); debugPrint(buttons["CLOCKWISE"]);
-    debugPrint(", UP: "); debugPrint(buttons["UP"]);
-    debugPrint(", IN: "); debugPrint(buttons["IN"]);
-    debugPrintln("");
-    #endif
+    crane_message *msg = (crane_message *)data;
+
+    // Execute motor control based on updated button states
+    controlMotor(msg->buttonStates);
 
     // Change LED color to green when message is received
-    if (anyButtonPressed()) {
-        currentColorScheme = 1; // Change to green color scheme
+    if (anyButtonPressed(msg->buttonStates))
+    {
+        currentColorScheme = 1;          // Change to green color scheme
         colorChangeStartTime = millis(); // Start the timer for color display
         messageReceived = true;
         updateLEDs(); // Update LEDs immediately
     }
-
-    // Execute motor control based on updated button states
-    controlMotor();
 }
 
 // Check if any button is pressed
-bool anyButtonPressed() {
-    return (buttons["ANTICLOCKWISE"] == 1 || 
-            buttons["DOWN"] == 1 || 
-            buttons["OUT"] == 1 || 
-            buttons["CLOCKWISE"] == 1 || 
-            buttons["UP"] == 1 || 
-            buttons["IN"] == 1);
+bool anyButtonPressed(uint8_t buttonStates)
+{
+    if (buttonStates == 0)
+    {
+        return false;
+    }
+    else
+    {
+        return true;
+    }
 }
 
-void updateLEDs() {
+void updateLEDs()
+{
     pixels.clear();
-    
+
     uint32_t brightColor, midColor, dimColor, veryDimColor;
-    
+
     // Select color scheme based on state
-    if (currentColorScheme == 0) {
+    if (currentColorScheme == 0)
+    {
         // Default red color scheme
         brightColor = BRIGHT_RED;
         midColor = MID_RED;
         dimColor = DIM_RED;
         veryDimColor = VERY_DIM_RED;
-    } else {
+    }
+    else
+    {
         // Green color scheme for message indication
         brightColor = BRIGHT_GREEN;
         midColor = MID_GREEN;
         dimColor = DIM_GREEN;
         veryDimColor = VERY_DIM_GREEN;
     }
-    
-    if (centerLedState) {
+
+    if (centerLedState)
+    {
         pixels.setPixelColor(CENTER_LED, midColor);
     }
 
     int mainLED = ((currentLED - 1) / 2) + 1;
 
-    if (currentLED % 2 == 1) {
+    if (currentLED % 2 == 1)
+    {
         pixels.setPixelColor(mainLED, brightColor);
 
         int prevLED = (mainLED == 1) ? 6 : mainLED - 1;
@@ -281,7 +324,9 @@ void updateLEDs() {
 
         int prevPrevPrevLED = (prevPrevLED == 1) ? 6 : prevPrevLED - 1;
         pixels.setPixelColor(prevPrevPrevLED, veryDimColor);
-    } else {
+    }
+    else
+    {
         int nextLED = (mainLED == 6) ? 1 : mainLED + 1;
 
         pixels.setPixelColor(mainLED, brightColor);
@@ -297,10 +342,11 @@ void updateLEDs() {
 }
 
 // System initialization
-void setup() {
+void setup()
+{
 #if DEBUG_MODE
-    Serial.begin(115200);  // Initialize serial communication for debugging
-    delay(100);          // Wait for serial to stabilize
+    Serial.begin(115200); // Initialize serial communication for debugging
+    delay(100);           // Wait for serial to stabilize
 #endif
 
     debugPrintln("ESP8266 Crane Motor Controller with ESP-NOW");
@@ -309,7 +355,7 @@ void setup() {
     Wire.begin();
 
     // Initialize motor shields
-    //setupMotors();
+    setupMotors();
 
     // Initialize last message time
     lastMessageTime = millis();
@@ -327,23 +373,18 @@ void setup() {
 }
 
 // Main program loop
-void loop() {
+void loop()
+{
     // Check for message timeout
-    if (millis() - lastMessageTime > MESSAGE_TIMEOUT) {
-        // Reset all button states
-        buttons["ANTICLOCKWISE"] = 0;
-        buttons["CLOCKWISE"] = 0;
-        buttons["UP"] = 0;
-        buttons["DOWN"] = 0;
-        buttons["OUT"] = 0;
-        buttons["IN"] = 0;
-
+    if (millis() - lastMessageTime > MESSAGE_TIMEOUT)
+    {
         // Stop all motors
-        //stopAllMotors();
+        stopAllMotors();
     }
 
     // If ESP-NOW is not initialized, try to set it up
-    if (!espNowInitialized) {
+    if (!espNowInitialized)
+    {
         espNowInitialized = setupESPNow();
     }
 
@@ -351,25 +392,29 @@ void loop() {
     bool updateDisplay = false;
 
     // Check if we need to revert color scheme
-    if (messageReceived && currentMillis - colorChangeStartTime >= COLOR_CHANGE_DURATION) {
+    if (messageReceived && currentMillis - colorChangeStartTime >= COLOR_CHANGE_DURATION)
+    {
         currentColorScheme = 0; // Switch back to red color scheme
         messageReceived = false;
         updateDisplay = true;
     }
 
-    if (currentMillis - previousCenterBlinkMillis >= centerBlinkInterval) {
+    if (currentMillis - previousCenterBlinkMillis >= centerBlinkInterval)
+    {
         previousCenterBlinkMillis = currentMillis;
         centerLedState = !centerLedState;
         updateDisplay = true;
     }
 
-    if (animationRunning && currentMillis - previousAnimationMillis >= animationInterval) {
+    if (animationRunning && currentMillis - previousAnimationMillis >= animationInterval)
+    {
         previousAnimationMillis = currentMillis;
         currentLED = (currentLED % STEPS_PER_CYCLE) + 1;
         updateDisplay = true;
     }
 
-    if (updateDisplay) {
+    if (updateDisplay)
+    {
         updateLEDs();
     }
 
