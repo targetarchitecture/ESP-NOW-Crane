@@ -28,7 +28,6 @@ bool motorsConnected = false;
 // System state tracking
 unsigned long lastMessageTime = 0;                // Timestamp of last received ESP-NOW message
 const unsigned long MESSAGE_TIMEOUT = 1000;       // Timeout period in milliseconds (1 second)
-const unsigned long COLOR_CHANGE_DURATION = 3000; // Duration to show the message color before returning to animation
 
 // ESP-NOW communication status
 bool espNowInitialized = false;
@@ -58,25 +57,13 @@ const uint32_t MID_RED = 0xA00000;
 const uint32_t DIM_RED = 0x500000;
 const uint32_t VERY_DIM_RED = 0x200000;
 
-// Colors for message indication
-const uint32_t BRIGHT_GREEN = 0x00FF00;
-const uint32_t MID_GREEN = 0x00A000;
-const uint32_t DIM_GREEN = 0x005000;
-const uint32_t VERY_DIM_GREEN = 0x002000;
-
-// Current color scheme (0 = red, 1 = green)
-int currentColorScheme = 0;
-
 unsigned long previousCenterBlinkMillis = 0;
 unsigned long previousAnimationMillis = 0;
-unsigned long colorChangeStartTime = 0;
 
 const long centerBlinkInterval = 1000;
 const long animationInterval = 60;
 
 bool centerLedState = false;
-bool animationRunning = true;
-bool messageReceived = false;
 
 void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t len);
 void updateLEDs();
@@ -257,15 +244,6 @@ void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t len)
 
     // Execute motor control based on updated button states
     controlMotor(msg->buttonStates);
-
-    // Change LED color to green when message is received
-    if (anyButtonPressed(msg->buttonStates))
-    {
-        currentColorScheme = 1;          // Change to green color scheme
-        colorChangeStartTime = millis(); // Start the timer for color display
-        messageReceived = true;
-        updateLEDs(); // Update LEDs immediately
-    }
 }
 
 // Check if any button is pressed
@@ -287,23 +265,11 @@ void updateLEDs()
 
     uint32_t brightColor, midColor, dimColor, veryDimColor;
 
-    // Select color scheme based on state
-    if (currentColorScheme == 0)
-    {
         // Default red color scheme
         brightColor = BRIGHT_RED;
         midColor = MID_RED;
         dimColor = DIM_RED;
         veryDimColor = VERY_DIM_RED;
-    }
-    else
-    {
-        // Green color scheme for message indication
-        brightColor = BRIGHT_GREEN;
-        midColor = MID_GREEN;
-        dimColor = DIM_GREEN;
-        veryDimColor = VERY_DIM_GREEN;
-    }
 
     if (centerLedState)
     {
@@ -391,14 +357,6 @@ void loop()
     unsigned long currentMillis = millis();
     bool updateDisplay = false;
 
-    // Check if we need to revert color scheme
-    if (messageReceived && currentMillis - colorChangeStartTime >= COLOR_CHANGE_DURATION)
-    {
-        currentColorScheme = 0; // Switch back to red color scheme
-        messageReceived = false;
-        updateDisplay = true;
-    }
-
     if (currentMillis - previousCenterBlinkMillis >= centerBlinkInterval)
     {
         previousCenterBlinkMillis = currentMillis;
@@ -406,7 +364,7 @@ void loop()
         updateDisplay = true;
     }
 
-    if (animationRunning && currentMillis - previousAnimationMillis >= animationInterval)
+    if ( currentMillis - previousAnimationMillis >= animationInterval)
     {
         previousAnimationMillis = currentMillis;
         currentLED = (currentLED % STEPS_PER_CYCLE) + 1;
