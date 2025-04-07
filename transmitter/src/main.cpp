@@ -3,207 +3,257 @@
 #include <WiFi.h>
 #include <esp_now.h>
 
-// Debug mode - set to false to disable Serial output
+// ===== CONFIGURATION =====
+// Set to true to enable Serial debugging output
 #define DEBUG_MODE true
 
-// Define the WS2812 LED pin
+// Set to true to enable WS2812 LED feedback
 #define LED_MODE true
+
+// Set to true to enable deep sleep mode for power saving
+#define SLEEP_MODE true
+
+// Hardware configuration
 #define LED_PIN 21
 #define NUM_LEDS 1
 
-// Define sleep mode
-// #define SLEEP_MODE true
+// Timing configurations (all in milliseconds)
+#define DEBOUNCE_DELAY 50   // Button debounce time
+#define UPDATE_INTERVAL 250 // ESP-NOW update interval when button is pressed
+#define SLEEP_DELAY 3000    // Time before going to sleep after button release
 
-// Define the button pins
-const int buttonPins[] = {1, 2, 3, 4, 5, 6};
-const int numButtons = 6;
+// ESP-NOW receiver MAC address
+const uint8_t RECEIVER_MAC[] = {0xB4, 0xE6, 0x2D, 0x53, 0xAF, 0x58};
 
-// Define colors for each button (in RGB format)
-uint32_t buttonColors[] = {
-    0xFF9800, // Vivid Orange (Button 1 - ANTICLOCKWISE)  Y
-    0xD32F2F, // Deep Red (Button 2 - DOWN)               Y
-    0x2196F3, // Bright Blue (Button 3 - OUT)
-    0x4CAF50, // Green (Button 4 - CLOCKWISE)             Y
-    0x9C27B0, // Purple (Button 5 - UP)                   Y
-    0x00BCD4  // Cyan/Light Blue (Button 6 - IN)
+// ===== BUTTON CONFIGURATION =====
+// Button metadata structure for better organization
+typedef struct
+{
+  int pin;                        // GPIO pin number
+  uint32_t color;                 // RGB color for this button
+  const char *name;               // Movement name for debugging
+  bool state;                     // Current state (pressed or not)
+  bool lastState;                 // Previous state for change detection
+  unsigned long lastDebounceTime; // Last time the button state changed
+} ButtonConfig;
+
+// Button definitions
+ButtonConfig buttons[] = {
+    {1, 0xFF9800, "ANTICLOCKWISE", false, false, 0}, // Button 1
+    {2, 0xD32F2F, "DOWN", false, false, 0},          // Button 2
+    {3, 0x2196F3, "OUT", false, false, 0},           // Button 3
+    {4, 0x4CAF50, "CLOCKWISE", false, false, 0},     // Button 4
+    {5, 0x9C27B0, "UP", false, false, 0},            // Button 5
+    {6, 0x00BCD4, "IN", false, false, 0}             // Button 6
 };
 
-// Variables to keep track of button states
-int buttonStates[6] = {LOW, LOW, LOW, LOW, LOW, LOW};
-int lastButtonStates[6] = {LOW, LOW, LOW, LOW, LOW, LOW};
+const int NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
 
-unsigned long lastDebounceTime[6] = {0, 0, 0, 0, 0, 0};
-const unsigned long debounceDelay = 50; // Debounce time in milliseconds
-
-// ESP-NOW periodic update variables
-unsigned long lastUpdateTime = 0;
-const unsigned long updateInterval = 250; // Send update every 250ms (quarter second)
-
-// Sleep parameters
-const unsigned long sleepDelay = 3000; // Time in ms before going to sleep after button release
-unsigned long buttonReleaseTime = 0;   // Time when the last button was released
-bool buttonPressed = false;            // Flag to track if any button is pressed
-bool readyToSleep = true;              // Flag to indicate ready to enter sleep
-
-// REPLACE WITH RECEIVER MAC Address
-uint8_t broadcastAddress[] = {0xB4, 0xE6, 0x2D, 0x53, 0xAF, 0x58};
-
-// ESP-NOW message structure - compact binary format
+// ===== ESP-NOW MESSAGE STRUCTURE =====
 typedef struct crane_message
 {
   uint8_t buttonStates; // Each bit represents a button state (bits 0-5)
 } crane_message;
 
-// Create message instance
+// Global variables
 crane_message craneMsg;
+Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+unsigned long lastUpdateTime = 0;
+unsigned long buttonReleaseTime = 0;
+bool anyButtonPressed = false;
+bool readyToSleep = true;
 
-// Initialize the NeoPixel library
-Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
-
-// --- Debugging Macros ---
+// ===== DEBUGGING MACROS =====
 #if DEBUG_MODE
-#define debugPrintln(message) Serial.println(message)
-#define debugPrint(message) Serial.print(message)
+#define DEBUG_BEGIN(baud) Serial.begin(baud)
+#define DEBUG_PRINT(x) Serial.print(x)
+#define DEBUG_PRINTLN(x) Serial.println(x)
+#define DEBUG_PRINTF(fmt, ...) Serial.printf(fmt, __VA_ARGS__)
+#define DEBUG_FLUSH() Serial.flush()
 #else
-#define debugPrintln(message) // do nothing
-#define debugPrint(message)   // do nothing
+#define DEBUG_BEGIN(baud)
+#define DEBUG_PRINT(x)
+#define DEBUG_PRINTLN(x)
+#define DEBUG_PRINTF(fmt, ...)
+#define DEBUG_FLUSH()
 #endif
 
-// Callback function when data is sent
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
+// ===== ESP-NOW FUNCTIONS =====
+
+// Callback when data is sent
+void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
 {
-  debugPrint("Last Packet Send Status: ");
-  debugPrintln(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+  DEBUG_PRINT("Send status: ");
+  DEBUG_PRINTLN(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Failed");
 }
 
-// Function to initialize ESP-NOW
-void initESPNow()
+// Initialize ESP-NOW with multiple retry attempts
+bool initESPNow()
 {
-  // Set device as a Wi-Fi Station and disconnect from any AP
+  // Set device as a Wi-Fi Station
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
 
-  // Init ESP-NOW
+  // Initialize ESP-NOW
   if (esp_now_init() != ESP_OK)
   {
-    debugPrintln("Error initializing ESP-NOW");
-    // Try to restart ESP-NOW after a delay
-    delay(500);
-    ESP.restart();
-    return;
+    DEBUG_PRINTLN("ESP-NOW init failed");
+    return false;
   }
 
-  // Register send callback
-  esp_now_register_send_cb(OnDataSent);
+  // Register callback
+  esp_now_register_send_cb(onDataSent);
 
   // Register peer
   esp_now_peer_info_t peerInfo = {};
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  memcpy(peerInfo.peer_addr, RECEIVER_MAC, 6);
   peerInfo.channel = 0;
   peerInfo.encrypt = false;
 
   // Add peer
   if (esp_now_add_peer(&peerInfo) != ESP_OK)
   {
-    debugPrintln("Failed to add peer");
-    return;
+    DEBUG_PRINTLN("Failed to add peer");
+    return false;
   }
 
-  debugPrintln("ESP-NOW initialized successfully");
+  DEBUG_PRINTLN("ESP-NOW initialized successfully");
+  return true;
 }
 
-// Function to send button states via ESP-NOW
-void sendButtonStates()
+// Pack button states and send via ESP-NOW
+bool sendButtonStates()
 {
-  // Pack all button states into a single byte (bit 0 = button 1, bit 1 = button 2, etc.)
+  // Pack button states into a single byte
   craneMsg.buttonStates = 0;
-  for (int i = 0; i < numButtons; i++)
+  for (int i = 0; i < NUM_BUTTONS; i++)
   {
-    if (buttonStates[i] == HIGH)
+    if (buttons[i].state)
     {
-      craneMsg.buttonStates |= (1 << i); // Set the bit for this button
+      craneMsg.buttonStates |= (1 << i);
     }
   }
 
-  // Make sure WiFi is in the correct mode before sending
+  // Ensure WiFi is in the correct mode
   if (WiFi.getMode() != WIFI_STA)
   {
-    debugPrintln("WiFi not in STA mode. Fixing...");
+    DEBUG_PRINTLN("Fixing WiFi mode...");
     WiFi.mode(WIFI_STA);
     delay(10);
   }
 
-  // Send message via ESP-NOW
-  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *)&craneMsg, sizeof(craneMsg));
+  // Send message
+  esp_err_t result = esp_now_send(RECEIVER_MAC, (uint8_t *)&craneMsg, sizeof(craneMsg));
 
-  if (result == ESP_OK)
+  if (result != ESP_OK)
   {
-    debugPrintln("ESP-NOW message sent successfully");
-  }
-  else
-  {
-    // Define peerInfo outside the switch to avoid compiler error
+    DEBUG_PRINT("ESP-NOW error: ");
+
+    // Declare peerInfo outside the switch to avoid compiler errors
     esp_now_peer_info_t peerInfo = {};
 
-    debugPrint("Error sending ESP-NOW message: ");
     switch (result)
     {
     case ESP_ERR_ESPNOW_NOT_INIT:
-      debugPrintln("ESP-NOW not initialized");
-      // Try to reinitialize
+      DEBUG_PRINTLN("Not initialized, reinitializing...");
       esp_now_deinit();
       delay(10);
       initESPNow();
       break;
-    case ESP_ERR_ESPNOW_ARG:
-      debugPrintln("Invalid argument");
-      break;
-    case ESP_ERR_ESPNOW_INTERNAL:
-      debugPrintln("Internal error");
-      break;
-    case ESP_ERR_ESPNOW_NO_MEM:
-      debugPrintln("Out of memory");
-      break;
     case ESP_ERR_ESPNOW_NOT_FOUND:
-      debugPrintln("Peer not found");
-      // Try to re-add the peer
-      memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+      DEBUG_PRINTLN("Peer not found, re-adding...");
+      memcpy(peerInfo.peer_addr, RECEIVER_MAC, 6);
       peerInfo.channel = 0;
       peerInfo.encrypt = false;
       esp_now_add_peer(&peerInfo);
       break;
-    case ESP_ERR_ESPNOW_IF:
-      debugPrintln("Interface error");
-      break;
     default:
-      debugPrintln("Unknown error");
+      DEBUG_PRINTF("Error code: %d\n", result);
     }
+
+    return false;
   }
 
-// Debug output without JSON
+// Debug output for button states
 #if DEBUG_MODE
-
-  const char *buttonMovements[] = {
-      "ANTICLOCKWISE", // Button 1
-      "DOWN",          // Button 2
-      "OUT",           // Button 3
-      "CLOCKWISE",     // Button 4
-      "UP",            // Button 5
-      "IN"             // Button 6
-  };
-
-  debugPrintln("Button states:");
-  for (int i = 0; i < numButtons; i++)
+  DEBUG_PRINTLN("\nButton states:");
+  for (int i = 0; i < NUM_BUTTONS; i++)
   {
-    debugPrint(buttonMovements[i]);
-    debugPrint(": ");
-    debugPrintln(buttonStates[i] == HIGH ? "1" : "0");
+    DEBUG_PRINTF("  %s: %d\n", buttons[i].name, buttons[i].state ? 1 : 0);
   }
+#endif
+
+  return true;
+}
+
+// ===== LED CONTROL FUNCTIONS =====
+
+// Initialize the LED
+void setupLED()
+{
+#if LED_MODE
+  strip.begin();
+  strip.setBrightness(50);
+  strip.setPixelColor(0, 0); // Off
+  strip.show();
+  DEBUG_PRINTLN("LED initialized");
 #endif
 }
 
-// Get wake cause and button that triggered wake up
-void printWakeupReason()
+// Set LED color based on active button
+void updateLED(int activeButton)
+{
+#if LED_MODE
+  if (activeButton >= 0 && activeButton < NUM_BUTTONS)
+  {
+    strip.setPixelColor(0, buttons[activeButton].color);
+  }
+  else
+  {
+    strip.setPixelColor(0, 0); // Off
+  }
+  strip.show();
+#endif
+}
+
+// ===== POWER MANAGEMENT FUNCTIONS =====
+
+// Configure deep sleep wake sources
+void setupSleep()
+{
+#if SLEEP_MODE
+  // Create wake-up mask for all button pins
+  uint64_t mask = 0;
+  for (int i = 0; i < NUM_BUTTONS; i++)
+  {
+    mask |= (1ULL << buttons[i].pin);
+  }
+
+  // Configure EXT1 wake sources (any high level will wake up)
+  esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_HIGH);
+  DEBUG_PRINTLN("Sleep mode configured");
+#endif
+}
+
+// Enter deep sleep mode
+void goToSleep()
+{
+#if SLEEP_MODE
+  DEBUG_PRINTLN("Entering deep sleep");
+  DEBUG_FLUSH();
+
+  // Turn off LED before sleep
+  updateLED(-1);
+
+  // Enter deep sleep
+  esp_deep_sleep_start();
+#else
+  DEBUG_PRINTLN("Sleep mode disabled");
+#endif
+}
+
+// Identify what caused the ESP32 to wake up
+void checkWakeupCause()
 {
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
 
@@ -212,229 +262,172 @@ void printWakeupReason()
   case ESP_SLEEP_WAKEUP_EXT1:
   {
     uint64_t wakeup_pin_mask = esp_sleep_get_ext1_wakeup_status();
-    debugPrintln("Wakeup caused by external signal using EXT1");
+    DEBUG_PRINTLN("Wakeup caused by button press");
 
-    // Determine which button woke up the device
-    for (int i = 0; i < numButtons; i++)
+    // Identify which button woke up the device
+    for (int i = 0; i < NUM_BUTTONS; i++)
     {
-      if (wakeup_pin_mask & (1ULL << buttonPins[i]))
+      if (wakeup_pin_mask & (1ULL << buttons[i].pin))
       {
-        debugPrint("Wakeup button: GPIO ");
-        debugPrintln(buttonPins[i]);
-        delay(10);
-
-#if LED_MODE
-        // Set the LED to the color of the button that woke up the device
-        strip.setPixelColor(0, buttonColors[i]);
-        strip.show();
-#endif
+        DEBUG_PRINTF("  Wake button: %s (GPIO %d)\n", buttons[i].name, buttons[i].pin);
+        updateLED(i);
         break;
       }
     }
     break;
   }
   case ESP_SLEEP_WAKEUP_TIMER:
-    debugPrintln("Wakeup caused by timer");
+    DEBUG_PRINTLN("Wakeup caused by timer");
     break;
   default:
-#if DEBUG_MODE
-    Serial.printf("Wakeup was not caused by deep sleep: %d\n", wakeup_reason);
-#endif
+    DEBUG_PRINTF("Wakeup not caused by deep sleep: %d\n", wakeup_reason);
     break;
   }
 }
 
-void setup()
+// ===== BUTTON HANDLING FUNCTIONS =====
+
+// Initialize button pins
+void setupButtons()
 {
-  // Initialize serial communication for debugging
-#if DEBUG_MODE
-  Serial.begin(115200);
-  delay(500); // Longer delay to ensure serial is ready
-#endif
-
-  debugPrintln("ESP32-S3 WS2812 LED Control with Deep Sleep and ESP-NOW");
-  delay(100); // Give more time for initialization
-
-  // Initialize the LED strip
-#if LED_MODE
-  strip.begin();
-  strip.setBrightness(50); // Set brightness (0-255)
-  strip.show();            // Initialize all pixels to 'off'
-
-  // Set initial LED color to black/off
-  strip.setPixelColor(0, strip.Color(0, 0, 0)); // Explicitly set to black (R=0, G=0, B=0)
-  strip.show();
-#endif
-
-  // Initialize button pins as inputs (externally pulled down)
-  for (int i = 0; i < numButtons; i++)
+  for (int i = 0; i < NUM_BUTTONS; i++)
   {
-    pinMode(buttonPins[i], INPUT);
-    debugPrint("Button on GPIO ");
-    debugPrint(buttonPins[i]);
-    debugPrintln(" initialized");
-    delay(10);
+    pinMode(buttons[i].pin, INPUT);
+    DEBUG_PRINTF("Button %s on GPIO %d initialized\n", buttons[i].name, buttons[i].pin);
   }
-
-  // Check if the ESP32 woke up from deep sleep
-  printWakeupReason();
-
-  // Initialize ESP-NOW with retry mechanism
-  for (int retry = 0; retry < 3; retry++)
-  {
-    initESPNow();
-    delay(100);
-
-    // Test if ESP-NOW is working by sending a test message
-    craneMsg.buttonStates = 0; // All buttons released
-    esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *)&craneMsg, sizeof(craneMsg));
-
-    if (result == ESP_OK)
-    {
-      debugPrintln("ESP-NOW test message successful");
-      break;
-    }
-    else
-    {
-      debugPrint("ESP-NOW initialization attempt ");
-      debugPrint(retry + 1);
-      debugPrintln(" failed, retrying...");
-      delay(500);
-    }
-  }
-
-#if SLEEP_MODE
-  // Configure the wake-up source (all buttons)
-  uint64_t mask = 0;
-  for (int i = 0; i < numButtons; i++)
-  {
-    mask |= (1ULL << buttonPins[i]);
-  }
-
-  // Configure EXT1 wake sources (any high level on specified GPIOs will wake up the ESP32)
-  esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_HIGH);
-#endif
-
-  debugPrintln("Setup complete");
 }
 
-void loop()
+// Read and process button states with debouncing
+void handleButtons()
 {
-  // set variables
-  bool anyButtonPressed = false;
-  bool buttonStateChanged = false;
+  bool stateChanged = false;
   int activeButton = -1;
+  anyButtonPressed = false;
 
   // Check each button
-  for (int i = 0; i < numButtons; i++)
+  for (int i = 0; i < NUM_BUTTONS; i++)
   {
-    // Read the button state
-    int reading = digitalRead(buttonPins[i]);
+    // Read current state
+    int reading = digitalRead(buttons[i].pin);
 
-    // Check if the button state has changed
-    if (reading != lastButtonStates[i])
+    // If state changed, reset debounce timer
+    if (reading != buttons[i].lastState)
     {
-      // Reset the debounce timer
-      lastDebounceTime[i] = millis();
+      buttons[i].lastDebounceTime = millis();
     }
 
-    // If enough time has passed, consider the state change valid
-    if ((millis() - lastDebounceTime[i]) > debounceDelay)
+    // If debounce period passed, update actual state
+    if ((millis() - buttons[i].lastDebounceTime) > DEBOUNCE_DELAY)
     {
-      // If the button state has changed
-      if (reading != buttonStates[i])
+      // If button state has changed
+      if (reading != buttons[i].state)
       {
-        buttonStates[i] = reading;
-        buttonStateChanged = true;
+        buttons[i].state = reading;
+        stateChanged = true;
 
-        // If the button is pressed (HIGH with external pull-down)
-        if (buttonStates[i] == HIGH)
-        {
-          debugPrint("Button ");
-          debugPrint(i + 1);
-          debugPrint(" on GPIO ");
-          debugPrint(buttonPins[i]);
-          debugPrintln(" pressed");
-
+        if (buttons[i].state)
+        { // Button pressed
+          DEBUG_PRINTF("Button %s pressed\n", buttons[i].name);
           activeButton = i;
           anyButtonPressed = true;
-          buttonPressed = true;
           readyToSleep = false;
-
-// Light up the LED with the color for this button
-#if LED_MODE
-          strip.setPixelColor(0, buttonColors[i]);
-          strip.show();
-#endif
         }
       }
     }
 
-    // Keep track if any button is currently pressed
-    if (buttonStates[i] == HIGH)
+    // Track if any button is currently pressed
+    if (buttons[i].state)
     {
       anyButtonPressed = true;
     }
 
-    // Save the current reading for the next loop
-    lastButtonStates[i] = reading;
+    // Save current reading for next iteration
+    buttons[i].lastState = reading;
   }
 
-  // If button state changed, send ESP-NOW message
-  if (buttonStateChanged)
+  // Handle button state change
+  if (stateChanged)
   {
+    updateLED(activeButton);
     sendButtonStates();
   }
 
-  // If no button is currently pressed but one was pressed before, track release time
-  if (!anyButtonPressed && buttonPressed)
+  // Handle button release
+  static bool prevAnyButtonPressed = false;
+  if (!anyButtonPressed && prevAnyButtonPressed)
   {
-    buttonPressed = false;
     buttonReleaseTime = millis();
     readyToSleep = true;
-
-// Turn off the LED when button is released
-#if LED_MODE
-    strip.setPixelColor(0, strip.Color(0, 0, 0));
-    strip.show();
-#endif
-
-    // Send final button states before preparing for sleep
-    sendButtonStates();
-
-    debugPrintln("All buttons released, preparing for sleep");
+    updateLED(-1);      // Turn off LED
+    sendButtonStates(); // Send final button states before sleep
+    DEBUG_PRINTLN("All buttons released");
   }
+  prevAnyButtonPressed = anyButtonPressed;
 
-  // Send periodic ESP-NOW updates if any button is pressed
-  if (anyButtonPressed && (millis() - lastUpdateTime > updateInterval))
+  // Send periodic updates when buttons are pressed
+  if (anyButtonPressed && (millis() - lastUpdateTime > UPDATE_INTERVAL))
   {
     sendButtonStates();
     lastUpdateTime = millis();
   }
 
-  // If it's time to sleep and we're ready
-  if (readyToSleep && (millis() - buttonReleaseTime > sleepDelay))
+  // Check if it's time to sleep
+  if (readyToSleep && (millis() - buttonReleaseTime > SLEEP_DELAY))
   {
-#if SLEEP_MODE
-    debugPrintln("Going to deep sleep now");
+    goToSleep();
+  }
+}
+
+// ===== MAIN FUNCTIONS =====
+
+void setup()
+{
+  // Initialize serial for debugging
+  DEBUG_BEGIN(115200);
 #if DEBUG_MODE
-    Serial.flush();
+  delay(50); // Much shorter delay for Serial initialization
 #endif
-#endif
+  DEBUG_PRINTLN("\nESP32 Button Controller Starting");
 
-// Make sure LED is off before sleep
-#if LED_MODE
-    strip.setPixelColor(0, strip.Color(0, 0, 0));
-    strip.show();
-#endif
+  // Initialize components
+  setupLED();
+  setupButtons();
+  setupSleep();
 
-#if SLEEP_MODE
-    // Enter deep sleep
-    esp_deep_sleep_start();
-#endif
+  // Check wake reason
+  checkWakeupCause();
+
+  // Initialize ESP-NOW with retries
+  bool espNowInitialized = false;
+  for (int retry = 0; retry < 3 && !espNowInitialized; retry++)
+  {
+    DEBUG_PRINTF("ESP-NOW init attempt %d/3\n", retry + 1);
+    espNowInitialized = initESPNow();
+    if (!espNowInitialized)
+    {
+      delay(500);
+    }
   }
 
-  // Short delay for the loop
-  delay(100);
-  //debugPrint(".");
+  // Send initial message
+  if (espNowInitialized)
+  {
+    craneMsg.buttonStates = 0; // All buttons released
+    sendButtonStates();
+  }
+  else
+  {
+    DEBUG_PRINTLN("WARNING: ESP-NOW initialization failed!");
+  }
+
+  DEBUG_PRINTLN("Setup complete");
+}
+
+void loop()
+{
+  // Handle button presses and releases
+  handleButtons();
+
+  // Small delay to prevent busy-waiting
+  delay(20); // Reduced from 100ms for more responsive feel
 }
