@@ -13,7 +13,7 @@ typedef struct crane_message
 } crane_message;
 
 // Debug mode flag - enables/disables Serial output for debugging
-#define DEBUG_MODE true
+#define DEBUG_MODE false
 
 // Motor Control Configuration
 uint8_t motor_speed = 100; // Default motor speed (0-100%)
@@ -23,11 +23,21 @@ LOLIN_I2C_MOTOR motor1(0x20); // First motor board at I2C address 0x20
 LOLIN_I2C_MOTOR motor2(0x21); // Second motor board at I2C address 0x21
 
 // Global flag to track motor initialization
-bool motorsConnected = false;
+bool motorsConnected = true;
+
+// button states
+volatile uint8_t ANTICLOCKWISE = 0;
+volatile uint8_t DOWN = 0;
+volatile uint8_t OUT = 0;
+volatile uint8_t CLOCKWISE = 0;
+volatile uint8_t UP = 0;
+volatile uint8_t IN = 0;
 
 // System state tracking
-unsigned long lastMessageTime = 0;                // Timestamp of last received ESP-NOW message
-const unsigned long MESSAGE_TIMEOUT = 1000;       // Timeout period in milliseconds (1 second)
+unsigned long lastMessageTime = 0;          // Timestamp of last received ESP-NOW message
+const unsigned long MESSAGE_TIMEOUT = 1000; // Timeout period in milliseconds (1 second)
+unsigned long lastControlMotorTime = 0;   // Timestamp of last controlMotor() execution
+const unsigned long CONTROL_MOTOR_INTERVAL = 200; // Interval for controlMotor() in milliseconds
 
 // ESP-NOW communication status
 bool espNowInitialized = false;
@@ -104,7 +114,7 @@ void stopAllMotors()
 {
     if (!motorsConnected)
     {
-        //debugPrintln("Motors not connected, cannot stop");
+        // debugPrintln("Motors not connected, cannot stop");
         return;
     }
 
@@ -112,85 +122,108 @@ void stopAllMotors()
     motor1.changeStatus(MOTOR_CH_BOTH, MOTOR_STATUS_STOP);
     motor2.changeStatus(MOTOR_CH_BOTH, MOTOR_STATUS_STOP);
 
-    debugPrintln("All motors stopped");
+    // debugPrintln("All motors stopped");
+}
+
+// test motors
+void testMotors()
+{
+    debugPrintln("test motors");
+
+    motor1.changeStatus(MOTOR_CH_A, MOTOR_STATUS_CCW);
+    motor1.changeDuty(MOTOR_CH_A, motor_speed);
+
+    delay(1000);
+
+    motor1.changeStatus(MOTOR_CH_BOTH, MOTOR_STATUS_STOP);
+    motor2.changeStatus(MOTOR_CH_BOTH, MOTOR_STATUS_STOP);
 }
 
 // Controls motor movement based on button states
-void controlMotor(uint8_t buttonStates)
+void controlMotor()
 {
-
-
-    uint8_t ANTICLOCKWISE = (buttonStates & (1 << 0)) ? 1 : 0;
-    uint8_t DOWN = (buttonStates & (1 << 1)) ? 1 : 0;
-    uint8_t OUT = (buttonStates & (1 << 2)) ? 1 : 0;
-    uint8_t CLOCKWISE = (buttonStates & (1 << 3)) ? 1 : 0;
-    uint8_t UP = (buttonStates & (1 << 4)) ? 1 : 0;
-    uint8_t IN = (buttonStates & (1 << 5)) ? 1 : 0;
-
-    Serial.print("ANTICLOCKWISE: ");
-    Serial.println(ANTICLOCKWISE);
-    Serial.print("DOWN: ");
-    Serial.println(DOWN);
-    Serial.print("OUT: ");
-    Serial.println(OUT);
-    Serial.print("CLOCKWISE: ");
-    Serial.println(CLOCKWISE);
-    Serial.print("UP: ");
-    Serial.println(UP);
-    Serial.print("IN: ");
-    Serial.println(IN);
-
     if (!motorsConnected)
     {
         // debugPrintln("Motors not initialized, cannot control");
         return;
     }
 
+    debugPrint("ANTICLOCKWISE: ");
+    debugPrintln(ANTICLOCKWISE);
+    debugPrint("DOWN: ");
+    debugPrintln(DOWN);
+    debugPrint("OUT: ");
+    debugPrintln(OUT);
+    debugPrint("CLOCKWISE: ");
+    debugPrintln(CLOCKWISE);
+    debugPrint("UP: ");
+    debugPrintln(UP);
+    debugPrint("IN: ");
+    debugPrintln(IN);
+
     // Rotation control (Motor A on first board)
     if (ANTICLOCKWISE == 1 && CLOCKWISE == 0)
     {
+        debugPrintln("ANTICLOCKWISE == 1 && CLOCKWISE == 0");
+
         motor1.changeStatus(MOTOR_CH_A, MOTOR_STATUS_CCW);
         motor1.changeDuty(MOTOR_CH_A, motor_speed);
     }
     if (ANTICLOCKWISE == 0 && CLOCKWISE == 1)
     {
+        debugPrintln("ANTICLOCKWISE == 0 && CLOCKWISE == 1");
+
         motor1.changeStatus(MOTOR_CH_A, MOTOR_STATUS_CW);
         motor1.changeDuty(MOTOR_CH_A, motor_speed);
     }
     if (ANTICLOCKWISE == 0 && CLOCKWISE == 0)
     {
+        debugPrintln("ANTICLOCKWISE == 0 && CLOCKWISE == 0");
+
         motor1.changeStatus(MOTOR_CH_A, MOTOR_STATUS_STOP);
     }
 
     // Vertical movement control (Motor B on first board)
     if (UP == 1 && DOWN == 0)
     {
+        debugPrintln("UP == 1 && DOWN == 0");
+
         motor1.changeStatus(MOTOR_CH_B, MOTOR_STATUS_CCW);
         motor1.changeDuty(MOTOR_CH_B, motor_speed);
     }
     if (UP == 0 && DOWN == 1)
     {
+        debugPrintln("UP == 0 && DOWN == 1");
+
         motor1.changeStatus(MOTOR_CH_B, MOTOR_STATUS_CW);
         motor1.changeDuty(MOTOR_CH_B, motor_speed);
     }
     if (UP == 0 && DOWN == 0)
     {
+        debugPrintln("UP == 0 && DOWN == 0");
+
         motor1.changeStatus(MOTOR_CH_B, MOTOR_STATUS_STOP);
     }
 
     // Extension control (Motor A on second board)
     if (IN == 1 && OUT == 0)
     {
+        debugPrintln("IN == 1 && OUT == 0");
+
         motor2.changeStatus(MOTOR_CH_B, MOTOR_STATUS_CCW);
         motor2.changeDuty(MOTOR_CH_B, motor_speed);
     }
     if (IN == 0 && OUT == 1)
     {
+        debugPrintln("IN == 0 && OUT == 1");
+
         motor2.changeStatus(MOTOR_CH_B, MOTOR_STATUS_CW);
         motor2.changeDuty(MOTOR_CH_B, motor_speed);
     }
     if (IN == 0 && OUT == 0)
     {
+        debugPrintln("IN == 0 && OUT == 0");
+
         motor2.changeStatus(MOTOR_CH_B, MOTOR_STATUS_STOP);
     }
 }
@@ -242,8 +275,12 @@ void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t len)
     // Cast the received data to the crane_message type
     crane_message *msg = (crane_message *)data;
 
-    // Execute motor control based on updated button states
-    controlMotor(msg->buttonStates);
+    ANTICLOCKWISE = (msg->buttonStates & (1 << 0)) ? 1 : 0;
+    DOWN = (msg->buttonStates & (1 << 1)) ? 1 : 0;
+    OUT = (msg->buttonStates & (1 << 2)) ? 1 : 0;
+    CLOCKWISE = (msg->buttonStates & (1 << 3)) ? 1 : 0;
+    UP = (msg->buttonStates & (1 << 4)) ? 1 : 0;
+    IN = (msg->buttonStates & (1 << 5)) ? 1 : 0;
 }
 
 // Check if any button is pressed
@@ -265,11 +302,11 @@ void updateLEDs()
 
     uint32_t brightColor, midColor, dimColor, veryDimColor;
 
-        // Default red color scheme
-        brightColor = BRIGHT_RED;
-        midColor = MID_RED;
-        dimColor = DIM_RED;
-        veryDimColor = VERY_DIM_RED;
+    // Default red color scheme
+    brightColor = BRIGHT_RED;
+    midColor = MID_RED;
+    dimColor = DIM_RED;
+    veryDimColor = VERY_DIM_RED;
 
     if (centerLedState)
     {
@@ -323,6 +360,8 @@ void setup()
     // Initialize motor shields
     setupMotors();
 
+    // testMotors();
+
     // Initialize last message time
     lastMessageTime = millis();
 
@@ -348,6 +387,13 @@ void loop()
         stopAllMotors();
     }
 
+    // Execute motor control based on updated button states
+    if (millis() - lastControlMotorTime >= CONTROL_MOTOR_INTERVAL)
+    {
+        lastControlMotorTime = millis();
+        controlMotor();
+    }
+
     // If ESP-NOW is not initialized, try to set it up
     if (!espNowInitialized)
     {
@@ -364,7 +410,7 @@ void loop()
         updateDisplay = true;
     }
 
-    if ( currentMillis - previousAnimationMillis >= animationInterval)
+    if (currentMillis - previousAnimationMillis >= animationInterval)
     {
         previousAnimationMillis = currentMillis;
         currentLED = (currentLED % STEPS_PER_CYCLE) + 1;
@@ -377,5 +423,5 @@ void loop()
     }
 
     // Small delay to prevent overwhelming the system
-    delay(10);
+    delay(50);
 }

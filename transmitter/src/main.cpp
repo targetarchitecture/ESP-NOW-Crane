@@ -5,7 +5,7 @@
 
 // ===== CONFIGURATION =====
 // Set to true to enable Serial debugging output
-#define DEBUG_MODE true
+#define DEBUG_MODE false
 
 // Set to true to enable WS2812 LED feedback
 #define LED_MODE true
@@ -20,10 +20,11 @@
 // Timing configurations (all in milliseconds)
 #define DEBOUNCE_DELAY 50   // Button debounce time
 #define UPDATE_INTERVAL 250 // ESP-NOW update interval when button is pressed
-#define SLEEP_DELAY 3000    // Time before going to sleep after button release
+#define SLEEP_DELAY 5000    // Time before going to sleep after button release
 
 // ESP-NOW receiver MAC address
-const uint8_t RECEIVER_MAC[] = {0xB4, 0xE6, 0x2D, 0x53, 0xAF, 0x58};
+const uint8_t RECEIVER_MAC[] = {0x3C, 0x71, 0xBF, 0x31, 0x5E, 0xF5};
+//const uint8_t RECEIVER_MAC[] = {0xB4, 0xE6, 0x2D, 0x53, 0xAF, 0x58};
 
 // ===== BUTTON CONFIGURATION =====
 // Button metadata structure for better organization
