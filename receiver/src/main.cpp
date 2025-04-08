@@ -6,17 +6,32 @@
 #include <string>
 #include <Adafruit_NeoPixel.h>
 
+// Configuration parameters - keeping these as #define for easy adjustments
+#define DEBUG_MODE false                        // Enable/disable serial debugging
+#define MESSAGE_TIMEOUT 1000                    // Timeout for ESP-NOW messages (ms)
+#define CONTROL_MOTOR_INTERVAL 100              // Motor control update interval (ms)
+#define MOTOR_INIT_TIMEOUT 3000                 // Timeout for motor initialization (ms)
+#define LED_PIN D4                              // Pin for NeoPixel data
+#define LED_COUNT 7                             // Number of LEDs
+#define CENTER_LED 0                            // Center LED index
+#define STEPS_PER_CYCLE 12                      // Steps in animation cycle
+#define LED_BRIGHTNESS 100                      // LED brightness (0-255)
+#define LED_BLINK_INTERVAL 1000                 // Center LED blink interval (ms)
+#define LED_ANIMATION_INTERVAL 60               // Animation update interval (ms)
+#define LOOP_DELAY 10                           // Main loop delay (ms)
+#define I2C_RETRY_COUNT 5                       // Max retries for I2C operations
+
 // Structure to receive data (updated to match transmitter format)
 typedef struct crane_message
 {
-    uint8_t buttonStates; // Bitwise button states
+    uint8_t buttonStates;   // Each bit represents a button state (bits 0-5)
+    uint8_t rotationSpeed;  // Speed for clockwise/anticlockwise (0-100%)
+    uint8_t verticalSpeed;  // Speed for up/down (0-100%)
+    uint8_t extensionSpeed; // Speed for in/out (0-100%)
 } crane_message;
 
 // Debug mode flag - enables/disables Serial output for debugging
 #define DEBUG_MODE false
-
-// Motor Control Configuration
-uint8_t motor_speed = 100; // Default motor speed (0-100%)
 
 // Initialize motor control objects with their I2C addresses
 LOLIN_I2C_MOTOR motor1(0x20); // First motor board at I2C address 0x20
@@ -32,12 +47,13 @@ volatile uint8_t OUT = 0;
 volatile uint8_t CLOCKWISE = 0;
 volatile uint8_t UP = 0;
 volatile uint8_t IN = 0;
+volatile uint8_t rotationSpeed = 0;  // Speed for clockwise/anticlockwise (0-100%)
+volatile uint8_t verticalSpeed = 0;  // Speed for up/down (0-100%)
+volatile uint8_t extensionSpeed = 0; // Speed for in/out (0-100%)
 
 // System state tracking
-unsigned long lastMessageTime = 0;          // Timestamp of last received ESP-NOW message
-const unsigned long MESSAGE_TIMEOUT = 1000; // Timeout period in milliseconds (1 second)
-unsigned long lastControlMotorTime = 0;   // Timestamp of last controlMotor() execution
-const unsigned long CONTROL_MOTOR_INTERVAL = 200; // Interval for controlMotor() in milliseconds
+unsigned long lastMessageTime = 0;                // Timestamp of last received ESP-NOW message
+unsigned long lastControlMotorTime = 0;           // Timestamp of last controlMotor() execution
 
 // ESP-NOW communication status
 bool espNowInitialized = false;
@@ -51,12 +67,6 @@ bool espNowInitialized = false;
 #define debugPrint(message)   // Debug messages disabled
 #endif
 
-// NeoPixel LED configuration
-#define LED_PIN D4  // GPIO pin connected to the NeoPixel data line.
-#define LED_COUNT 7 // Number of LEDs in your NeoPixel strip.
-#define CENTER_LED 0
-#define STEPS_PER_CYCLE 12
-
 Adafruit_NeoPixel pixels(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 int currentLED = 1;
@@ -69,9 +79,6 @@ const uint32_t VERY_DIM_RED = 0x200000;
 
 unsigned long previousCenterBlinkMillis = 0;
 unsigned long previousAnimationMillis = 0;
-
-const long centerBlinkInterval = 1000;
-const long animationInterval = 60;
 
 bool centerLedState = false;
 
@@ -125,20 +132,6 @@ void stopAllMotors()
     // debugPrintln("All motors stopped");
 }
 
-// test motors
-void testMotors()
-{
-    debugPrintln("test motors");
-
-    motor1.changeStatus(MOTOR_CH_A, MOTOR_STATUS_CCW);
-    motor1.changeDuty(MOTOR_CH_A, motor_speed);
-
-    delay(1000);
-
-    motor1.changeStatus(MOTOR_CH_BOTH, MOTOR_STATUS_STOP);
-    motor2.changeStatus(MOTOR_CH_BOTH, MOTOR_STATUS_STOP);
-}
-
 // Controls motor movement based on button states
 void controlMotor()
 {
@@ -167,14 +160,14 @@ void controlMotor()
         debugPrintln("ANTICLOCKWISE == 1 && CLOCKWISE == 0");
 
         motor1.changeStatus(MOTOR_CH_A, MOTOR_STATUS_CCW);
-        motor1.changeDuty(MOTOR_CH_A, motor_speed);
+        motor1.changeDuty(MOTOR_CH_A, rotationSpeed);
     }
     if (ANTICLOCKWISE == 0 && CLOCKWISE == 1)
     {
         debugPrintln("ANTICLOCKWISE == 0 && CLOCKWISE == 1");
 
         motor1.changeStatus(MOTOR_CH_A, MOTOR_STATUS_CW);
-        motor1.changeDuty(MOTOR_CH_A, motor_speed);
+        motor1.changeDuty(MOTOR_CH_A, rotationSpeed);
     }
     if (ANTICLOCKWISE == 0 && CLOCKWISE == 0)
     {
@@ -189,14 +182,14 @@ void controlMotor()
         debugPrintln("UP == 1 && DOWN == 0");
 
         motor1.changeStatus(MOTOR_CH_B, MOTOR_STATUS_CCW);
-        motor1.changeDuty(MOTOR_CH_B, motor_speed);
+        motor1.changeDuty(MOTOR_CH_B, verticalSpeed);
     }
     if (UP == 0 && DOWN == 1)
     {
         debugPrintln("UP == 0 && DOWN == 1");
 
         motor1.changeStatus(MOTOR_CH_B, MOTOR_STATUS_CW);
-        motor1.changeDuty(MOTOR_CH_B, motor_speed);
+        motor1.changeDuty(MOTOR_CH_B, verticalSpeed);
     }
     if (UP == 0 && DOWN == 0)
     {
@@ -211,14 +204,14 @@ void controlMotor()
         debugPrintln("IN == 1 && OUT == 0");
 
         motor2.changeStatus(MOTOR_CH_B, MOTOR_STATUS_CCW);
-        motor2.changeDuty(MOTOR_CH_B, motor_speed);
+        motor2.changeDuty(MOTOR_CH_B, extensionSpeed);
     }
     if (IN == 0 && OUT == 1)
     {
         debugPrintln("IN == 0 && OUT == 1");
 
         motor2.changeStatus(MOTOR_CH_B, MOTOR_STATUS_CW);
-        motor2.changeDuty(MOTOR_CH_B, motor_speed);
+        motor2.changeDuty(MOTOR_CH_B, extensionSpeed);
     }
     if (IN == 0 && OUT == 0)
     {
@@ -281,6 +274,11 @@ void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t len)
     CLOCKWISE = (msg->buttonStates & (1 << 3)) ? 1 : 0;
     UP = (msg->buttonStates & (1 << 4)) ? 1 : 0;
     IN = (msg->buttonStates & (1 << 5)) ? 1 : 0;
+
+    // Extract speed values
+    rotationSpeed = msg->rotationSpeed;
+    verticalSpeed = msg->verticalSpeed;
+    extensionSpeed = msg->extensionSpeed;
 }
 
 // Check if any button is pressed
@@ -403,14 +401,14 @@ void loop()
     unsigned long currentMillis = millis();
     bool updateDisplay = false;
 
-    if (currentMillis - previousCenterBlinkMillis >= centerBlinkInterval)
+    if (currentMillis - previousCenterBlinkMillis >= LED_BLINK_INTERVAL)
     {
         previousCenterBlinkMillis = currentMillis;
         centerLedState = !centerLedState;
         updateDisplay = true;
     }
 
-    if (currentMillis - previousAnimationMillis >= animationInterval)
+    if (currentMillis - previousAnimationMillis >= LED_ANIMATION_INTERVAL)
     {
         previousAnimationMillis = currentMillis;
         currentLED = (currentLED % STEPS_PER_CYCLE) + 1;

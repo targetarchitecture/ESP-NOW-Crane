@@ -40,12 +40,12 @@ typedef struct
 
 // Button definitions
 ButtonConfig buttons[] = {
-    {1, 0xFF9800, "ANTICLOCKWISE", false, false, 0}, // Button 1
+    {4, 0xFF9800, "ANTICLOCKWISE", false, false, 0}, // Button 1
     {2, 0xD32F2F, "DOWN", false, false, 0},          // Button 2
-    {3, 0x2196F3, "OUT", false, false, 0},           // Button 3
-    {4, 0x4CAF50, "CLOCKWISE", false, false, 0},     // Button 4
+    {6, 0x2196F3, "OUT", false, false, 0},           // Button 3
+    {1, 0x4CAF50, "CLOCKWISE", false, false, 0},     // Button 4
     {5, 0x9C27B0, "UP", false, false, 0},            // Button 5
-    {6, 0x00BCD4, "IN", false, false, 0}             // Button 6
+    {3, 0x00BCD4, "IN", false, false, 0}             // Button 6
 };
 
 const int NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
@@ -53,8 +53,16 @@ const int NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
 // ===== ESP-NOW MESSAGE STRUCTURE =====
 typedef struct crane_message
 {
-  uint8_t buttonStates; // Each bit represents a button state (bits 0-5)
+  uint8_t buttonStates;  // Each bit represents a button state (bits 0-5)
+  uint8_t rotationSpeed; // Speed for clockwise/anticlockwise (0-100%)
+  uint8_t verticalSpeed; // Speed for up/down (0-100%)
+  uint8_t extensionSpeed; // Speed for in/out (0-100%)
 } crane_message;
+
+// Motor speed configuration - maximum speed for each axis (0-100%)
+#define MAX_ROTATION_SPEED 70  // Clockwise/Anticlockwise axis
+#define MAX_VERTICAL_SPEED 100  // Up/Down axis
+#define MAX_EXTENSION_SPEED 50 // In/Out axis
 
 // Global variables
 crane_message craneMsg;
@@ -133,6 +141,28 @@ bool sendButtonStates()
     {
       craneMsg.buttonStates |= (1 << i);
     }
+  }
+
+  // Set speeds based on button states
+  // Check if clockwise or anticlockwise buttons are pressed (rotation axis)
+  if (buttons[0].state || buttons[3].state) { // ANTICLOCKWISE or CLOCKWISE
+    craneMsg.rotationSpeed = MAX_ROTATION_SPEED;
+  } else {
+    craneMsg.rotationSpeed = 0;
+  }
+
+  // Check if up or down buttons are pressed (vertical axis)
+  if (buttons[1].state || buttons[4].state) { // DOWN or UP
+    craneMsg.verticalSpeed = MAX_VERTICAL_SPEED;
+  } else {
+    craneMsg.verticalSpeed = 0;
+  }
+
+  // Check if in or out buttons are pressed (extension axis)
+  if (buttons[2].state || buttons[5].state) { // OUT or IN
+    craneMsg.extensionSpeed = MAX_EXTENSION_SPEED;
+  } else {
+    craneMsg.extensionSpeed = 0;
   }
 
   // Ensure WiFi is in the correct mode
