@@ -62,7 +62,7 @@ typedef struct crane_message
 // Motor speed configuration - maximum speed for each axis (0-100%)
 #define MAX_ROTATION_SPEED 70  // Clockwise/Anticlockwise axis
 #define MAX_VERTICAL_SPEED 100  // Up/Down axis
-#define MAX_EXTENSION_SPEED 50 // In/Out axis
+#define MAX_EXTENSION_SPEED 75 // In/Out axis
 
 // Global variables
 crane_message craneMsg;
